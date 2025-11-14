@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-windows:
+    runs-on: windows-latest
+    name: Native Strawberry Perl on Windows
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Strawberry Perl
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          distribution: "strawberry"
+          perl-version: "5.36"
+
+      - name: Verify Perl version
+        run: perl -V
+
+      - name: Install dependencies
+        run: cpanm --quiet --notest Win32::API Win32::Console Win32API::Registry Test::More Encode Exporter Hash::Util Win32 Win32API::File version
+
+      - name: Run tests
+        run: |
+          perl Makefile.PL
+          gmake test
