@@ -20,7 +20,7 @@ use version;
 
 # version '...'
 our $version = '0.10';
-our $VERSION = 'v0.1.0';
+our $VERSION = 'v0.1.1';
 $VERSION = eval $VERSION;
 
 # authority '...'
@@ -772,6 +772,7 @@ use constant UNICODE => do {
 use constant HAS_TYPE_TINY => eval {
   require Types::Standard;
       exists &Types::Standard::is_Bool
+  and exists &Types::Standard::is_CodeRef
   and exists &Types::Standard::is_HashRef
   and exists &Types::Standard::is_Int
   and exists &Types::Standard::is_ScalarRef
@@ -2231,7 +2232,7 @@ sub ReadConsoleInputW {    # $|undef ($handle, \%buffer)
 #
 #  - $handle:  Handle to the console screen buffer
 #  - \$buffer: Reference to a packed string (of I<CHAR_INFO>'s)
-#  - \%size:   Size of $buffer (<L/COORD> hash as width and height)
+#  - \%size:   Size of $buffer (L</COORD> hash as width and height)
 #  - \%coord:  Coordinates in $buffer to start reading from (L</COORD> hash)
 #  - \%region: L</SMALL_RECT> hash defining the screen region to read
 #
@@ -2568,9 +2569,9 @@ my (@sigint, @sigbreak);
 sub SetConsoleCtrlHandler {    # $|undef (\&handler|undef, $add)
   my ($handler, $add) = @_;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
-    $^E = @_ != 2                         ? ERROR_BAD_ARGUMENTS
-        : ref $add                        ? ERROR_INVALID_PARAMETER
-        : $add && ref($handler) ne 'CODE' ? ERROR_INVALID_PARAMETER
+    $^E = @_ != 2                        ? ERROR_BAD_ARGUMENTS
+        : !_is_Bool($add)                ? ERROR_INVALID_PARAMETER
+        : $add && !_is_CodeRef($handler) ? ERROR_INVALID_PARAMETER
         : 0
         ;
   unless (EMULATE_CTRL_HANDLER) {
@@ -2595,7 +2596,7 @@ sub SetConsoleCtrlHandler {    # $|undef (\&handler|undef, $add)
     }
     else {
       my $sigint = pop @sigint;
-      $SIG{INT}  = defined $sigint   ? $sigint   : 'DEFAULT';
+      $SIG{INT}  = defined $sigint ? $sigint : 'DEFAULT';
 
       my $sigbreak = pop @sigbreak;
       $SIG{BREAK}  = defined $sigbreak ? $sigbreak : 'DEFAULT';
@@ -3789,8 +3790,19 @@ sub _is_Bool ($) {    # $bool ($)
   goto &_is_Bool;
 }
 
+
+# Check for code reference.
+# B<Note>: Returns FALSE on objects.
+sub _is_CodeRef ($) {    # $bool (\%)
+  no warnings;
+  *_is_CodeRef = HAS_TYPE_TINY ? \&Types::Standard::is_CodeRef : sub {
+    return ref($_[0]) eq 'CODE';
+  };
+  goto &_is_CodeRef;
+}
+
 # Check for hash reference. Allows the hash to be empty. 
-# B<Note>: Returns FALSE on objects, TRUE for C<HashRef[Ref]>
+# B<Note>: Returns FALSE on objects, TRUE for C<HashRef[Ref]>.
 sub _is_HashRef ($) {    # $bool (\%)
   no warnings;
   *_is_HashRef = HAS_TYPE_TINY ? \&Types::Standard::is_HashRef : sub {
@@ -3810,7 +3822,7 @@ sub _is_Int ($) {    # $bool ($)
 }
 
 # Check for scalar reference.
-# B<Note>: Returns FALSE on objects, TRUE for C<ScalarRef[Ref]>
+# B<Note>: Returns FALSE on objects, TRUE for C<ScalarRef[Ref]>.
 sub _is_ScalarRef ($) {    # $bool (\$)
   no warnings;
   *_is_ScalarRef = HAS_TYPE_TINY ? \&Types::Standard::is_ScalarRef : sub {

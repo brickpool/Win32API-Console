@@ -6,17 +6,17 @@ Win32API::Console - Win32 native Console API
 
 The console is integrated into Windows and offers a comprehensive API that 
 allows character mode applications to interact with the user. In the past, 
-Perl developers could only use the L<Win32::Console> module (ANSI only, some 
-limitations). 
+Perl developers could only use the L<Win32::Console> module (usually only ANSI 
+support and some restrictions). 
 
 In order to use the classic API calls with maximum compatibility for Windows, 
 this module was created, which uses most of the XS functions of 
 L<Win32::Console>, but also provides additional ones (e.g., for wide char 
 support). 
 
-Further details can be found in the included POD or directly at MSDN. The API 
+Further details can be found in the included PM or directly at MSDN. The API 
 interface was modeled on the classic Windows API, so that the original 
-documentation from Microsoft can be used without any problems. 
+documentation from Microsoft can be used in most cases. 
 
 =head1 METHODS
 
@@ -647,6 +647,10 @@ $length:   Number of characters to read
 
  my $scalar | undef = ReadConsoleA($handle, \$buffer, $length, \$read,  | undef);
 
+=head2 ReadConsoleW
+
+ my $scalar | undef = ReadConsoleW($handle, \$buffer, $length, \$read,  | \%control | undef);
+
 =head2 ReadConsoleInput
 
  my $scalar | undef = ReadConsoleInput($handle, \%buffer);
@@ -732,14 +736,6 @@ I<FOCUS_EVENT_RECORD> structure used when C<{EventType} == FOCUS_EVENT>
 
  Returns: non-zero on success, undef on failure.
 
-=head2 ReadConsoleInputA
-
- my $scalar | undef = ReadConsoleInputA($handle, \%buffer);
-
-=head2 ReadConsoleInputW
-
- my $scalar | undef = ReadConsoleInputW($handle, \%buffer);
-
 =head2 ReadConsoleOutput
 
  my $scalar | undef = ReadConsoleOutput($handle, \$buffer, \%size, \%coord, \%region);
@@ -756,7 +752,7 @@ $handle:  Handle to the console screen buffer
 \$buffer: Reference to a packed string (of I<CHAR_INFO>'s)
 
 =item *
-\%size:   Size of $buffer (<L/COORD> hash as width and height)
+\%size:   Size of $buffer (L</COORD> hash as width and height)
 
 =item *
 \%coord:  Coordinates in $buffer to start reading from (L</COORD> hash)
@@ -775,6 +771,18 @@ returns the rectangle actually used.
 =head2 ReadConsoleOutputA
 
  my $scalar | undef = ReadConsoleOutputA($handle, \$buffer, \%size, \%coord, \%region);
+
+=head2 ReadConsoleOutputW
+
+ my $scalar | undef = ReadConsoleOutputW($handle, \$buffer, \%size, \%coord, \%region);
+
+=head2 ReadConsoleInputA
+
+ my $scalar | undef = ReadConsoleInputA($handle, \%buffer);
+
+=head2 ReadConsoleInputW
+
+ my $scalar | undef = ReadConsoleInputW($handle, \%buffer);
 
 =head2 ReadConsoleOutputAttribute
 
@@ -845,14 +853,6 @@ $length:  Number of characters to read
 =head2 ReadConsoleOutputCharacterW
 
  my $scalar | undef = ReadConsoleOutputCharacterW($handle, \$buffer, $length, \%coord, \$read);
-
-=head2 ReadConsoleOutputW
-
- my $scalar | undef = ReadConsoleOutputW($handle, \$buffer, \%size, \%coord, \%region);
-
-=head2 ReadConsoleW
-
- my $scalar | undef = ReadConsoleW($handle, \$buffer, $length, \$read,  | \%control | undef);
 
 =head2 ScrollConsoleScreenBuffer
 
@@ -1334,6 +1334,7 @@ $buffer:   String of characters
 =back
 
  Returns: non-zero on success, undef on failure.
+
 =head2 WriteConsoleOutputCharacterA
 
  my $scalar | undef = WriteConsoleOutputCharacterA($handle, $buffer, \%coord, \$written);

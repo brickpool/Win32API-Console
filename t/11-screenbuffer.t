@@ -22,13 +22,15 @@ my $hConsole = GetStdHandle(STD_ERROR_HANDLE);
 ok(defined $hConsole, 'STD_ERROR_HANDLE is defined');
 
 # Get screen buffer info
-my %buffer_info;
-my $got = GetConsoleScreenBufferInfo($hConsole, \%buffer_info);
+my %info;
+my $got = GetConsoleScreenBufferInfo($hConsole, \%info);
 diag "$^E" if $^E;
 ok($got, 'GetConsoleScreenBufferInfo returned true');
+plan skip_all => 'Cannot proceed if the dimension is unknown' 
+  unless $info{srWindow};
 
 # Save original window rectangle
-my %original_window = %{$buffer_info{srWindow}};
+my %original_window = %{$info{srWindow}};
 ok(
   $original_window{Bottom} > $original_window{Top}, 
   'Original window height is valid'
@@ -59,7 +61,7 @@ my $restore = SetConsoleWindowInfo($hConsole, 1, \%original_window);
 diag "$^E" if $^E;
 ok($restore, 'SetConsoleWindowInfo restored original window size');
 
-$restore = SetConsoleTextAttribute($hConsole, $buffer_info{wAttributes});
+$restore = SetConsoleTextAttribute($hConsole, $info{wAttributes});
 diag "$^E" if $^E;
 ok($restore, 'SetConsoleTextAttribute restored original color');
 

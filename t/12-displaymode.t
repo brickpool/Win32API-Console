@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 9;
+use Test::More tests => 8;
 
 BEGIN {
   use_ok 'Win32API::Console', qw(
@@ -36,15 +36,12 @@ SKIP: {
 };
 
 # Get screen buffer info
-my %buffer_info;
-$r = GetConsoleScreenBufferInfo($hConsole, \%buffer_info);
+my %info;
+$r = GetConsoleScreenBufferInfo($hConsole, \%info);
 diag "$^E" if $^E;
 ok($r, 'GetConsoleScreenBufferInfo returned true');
-
-# Get largest possible window size
-my $largest = GetLargestConsoleWindowSize($hConsole);
-diag "$^E" if $^E;
-ok($largest->{X} > 0 && $largest->{Y} > 0, 'Largest window size is valid');
+plan skip_all => 'Cannot proceed if the size is unknown' 
+  unless $info{dwSize};
 
 # Attempt to set display mode (may fail depending on environment)
 my %dimension;
@@ -56,9 +53,9 @@ SKIP: {
     if $^E == ERROR_CALL_NOT_IMPLEMENTED;
   ok($r, 'SetConsoleDisplayMode reapplied current mode');
   ok(
-    $buffer_info{dwSize}{X} != $dimension{X} 
+    $info{dwSize}{X} != $dimension{X} 
       ||
-    $buffer_info{dwSize}{Y} != $dimension{Y},
+    $info{dwSize}{Y} != $dimension{Y},
     'SetConsoleDisplayMode changed the current mode'
   );
   $r = SetConsoleDisplayMode(

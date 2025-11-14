@@ -1,4 +1,4 @@
-=head1 Win32::Console::DotNet
+=head1 Win32API::Console
 
 =head2 INSTALLATION
 

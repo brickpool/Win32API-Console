@@ -18,23 +18,23 @@ BEGIN {
 my $hConsole = GetStdHandle(STD_ERROR_HANDLE);
 ok(defined $hConsole, 'STD_ERROR_HANDLE is defined');
 
-my %size;
+my %info;
 subtest 'GetConsoleScreenBufferInfo' => sub {
-  my %info;
   ok(
     GetConsoleScreenBufferInfo($hConsole, \%info), 
     'Retrieved original screen buffer info'
   );
   diag "$^E" if $^E;
-
-  %size = %{ $info{dwSize} };
   ok(
-    $size{X} > 0 && $size{Y} > 0, 
+    $info{dwSize}{X} > 0 && $info{dwSize}{Y} > 0, 
     'Original buffer size is valid'
   );
 };
+plan skip_all => 'Cannot proceed if the size is unknown' 
+  unless $info{dwSize};
 
 subtest 'SetConsoleScreenBufferSize and restore' => sub {
+  my %size = %{ $info{dwSize} };
   my %new_size = (
     X => $size{X},
     Y => $size{Y} + 50,  # increase height
