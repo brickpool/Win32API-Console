@@ -1,11 +1,12 @@
 use strict;
 use warnings;
 
-use Test::More tests => 11;
+use Test::More tests => 10;
 
 BEGIN {
   use_ok 'Win32API::Console', qw(
     GetStdHandle
+    GetConsoleMode
     FlushConsoleInputBuffer
     ReadConsoleInputA
     ReadConsoleInputW
@@ -21,7 +22,10 @@ BEGIN {
 use constant VK_PACKET => 0xe7;
 
 my $hInput = GetStdHandle(STD_INPUT_HANDLE);
-ok(defined $hInput, 'STD_INPUT_HANDLE is defined');
+if (!$hInput || !GetConsoleMode($hInput, \my $mode)) {
+  plan skip_all => "No console input handle available";
+  exit;
+}
 
 subtest 'FlushConsoleInputBuffer' => sub {
   ok(FlushConsoleInputBuffer($hInput), 'FlushConsoleInputBuffer returned TRUE')

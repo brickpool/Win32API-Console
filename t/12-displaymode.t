@@ -1,25 +1,32 @@
 use strict;
 use warnings;
 
-use Test::More tests => 8;
+use Test::More tests => 9;
+use FindBin;
+use lib "$FindBin::Bin/lib";
 
 BEGIN {
+  use_ok 'TestConsole', qw( GetConsoleOutputHandle );
   use_ok 'Win32API::Console', qw(
-    GetStdHandle
     GetConsoleDisplayMode
     GetConsoleScreenBufferInfo
     GetLargestConsoleWindowSize
     SetConsoleDisplayMode
-    STD_ERROR_HANDLE
+    INVALID_HANDLE_VALUE
     :DISPLAY_MODE_
   );
 }
 
 use constant ERROR_CALL_NOT_IMPLEMENTED => 120;
 
-# Get handle for STDOUT
-my $hConsole = GetStdHandle(STD_ERROR_HANDLE);
-ok(defined $hConsole, 'STD_ERROR_HANDLE is defined');
+# Get a handle to the current console output
+my $hConsole = GetConsoleOutputHandle();
+diag "$^E" if $^E;
+unless ($hConsole) {
+  plan skip_all => "No real console output handle available";
+  exit;
+}
+isnt($hConsole, INVALID_HANDLE_VALUE, 'Obtained console handle');
 
 # Get current display mode (may fail depending on environment)
 my $mode = 0;
@@ -40,8 +47,6 @@ my %info;
 $r = GetConsoleScreenBufferInfo($hConsole, \%info);
 diag "$^E" if $^E;
 ok($r, 'GetConsoleScreenBufferInfo returned true');
-plan skip_all => 'Cannot proceed if the size is unknown' 
-  unless $info{dwSize};
 
 # Attempt to set display mode (may fail depending on environment)
 my %dimension;

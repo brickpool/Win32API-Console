@@ -3,21 +3,27 @@ use strict;
 use warnings;
 use utf8;
 
-use Test::More tests => 7;
+use Test::More tests => 8;
+use FindBin;
+use lib "$FindBin::Bin/lib";
 
 BEGIN {
+  use_ok 'TestConsole', qw( GetConsoleOutputHandle );
   use_ok 'Win32API::Console', qw(
-    GetStdHandle
     FillConsoleOutputCharacterW
     FillConsoleOutputCharacterA
-    STD_ERROR_HANDLE
+    INVALID_HANDLE_VALUE
   );
 }
 
 # Get a handle to the current console output
-my $handle = GetStdHandle(STD_ERROR_HANDLE);
-ok($handle, 'Obtained console handle');
-diag "$^E" unless $handle;
+my $handle = GetConsoleOutputHandle();
+diag "$^E" if $^E;
+unless ($handle) {
+  plan skip_all => "No real console output handle available";
+  exit;
+}
+isnt($handle, INVALID_HANDLE_VALUE, 'Obtained console handle');
 
 # Define the write position and length
 my %coord = (X => 0, Y => 0);

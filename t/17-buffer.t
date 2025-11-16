@@ -2,21 +2,29 @@ use strict;
 use warnings;
 use utf8;
 
-use Test::More tests => 6;
+use Test::More tests => 7;
+use FindBin;
+use lib "$FindBin::Bin/lib";
 
 BEGIN {
+  use_ok 'TestConsole', qw( GetConsoleOutputHandle );
   use_ok 'Win32API::Console', qw(
-    GetStdHandle
     GetConsoleScreenBufferInfo
     SetConsoleScreenBufferSize
     ScrollConsoleScreenBufferA
     ScrollConsoleScreenBufferW
-    STD_ERROR_HANDLE
+    INVALID_HANDLE_VALUE
   );
 }
 
-my $hConsole = GetStdHandle(STD_ERROR_HANDLE);
-ok(defined $hConsole, 'STD_ERROR_HANDLE is defined');
+# Get a handle to the current console output
+my $hConsole = GetConsoleOutputHandle();
+diag "$^E" if $^E;
+unless ($hConsole) {
+  plan skip_all => "No real console output handle available";
+  exit;
+}
+isnt($hConsole, INVALID_HANDLE_VALUE, 'Obtained console handle');
 
 my %info;
 subtest 'GetConsoleScreenBufferInfo' => sub {
@@ -30,8 +38,6 @@ subtest 'GetConsoleScreenBufferInfo' => sub {
     'Original buffer size is valid'
   );
 };
-plan skip_all => 'Cannot proceed if the size is unknown' 
-  unless $info{dwSize};
 
 subtest 'SetConsoleScreenBufferSize and restore' => sub {
   my %size = %{ $info{dwSize} };

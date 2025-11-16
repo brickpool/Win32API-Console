@@ -1,24 +1,31 @@
 use strict;
 use warnings;
 
-use Test::More tests => 10;
+use Test::More tests => 11;
+use FindBin;
+use lib "$FindBin::Bin/lib";
 
 BEGIN {
+  use_ok 'TestConsole', qw( GetConsoleOutputHandle );
   use_ok 'Win32API::Console', qw(
-    GetStdHandle
     GetCurrentConsoleFont
     GetCurrentConsoleFontEx
     GetConsoleFontSize
     GetNumberOfConsoleFonts
     GetOSVersion
     SetCurrentConsoleFontEx
-    STD_ERROR_HANDLE
+    INVALID_HANDLE_VALUE
   );
 }
 
-# Handle für STDOUT
-my $hConsole = GetStdHandle(STD_ERROR_HANDLE);
-ok(defined $hConsole, 'STD_ERROR_HANDLE is defined');
+# Get a handle to the current console output
+my $hConsole = GetConsoleOutputHandle();
+diag "$^E" if $^E;
+unless ($hConsole) {
+  plan skip_all => "No real console output handle available";
+  exit;
+}
+isnt($hConsole, INVALID_HANDLE_VALUE, 'Obtained console handle');
 
 my %font;
 # GetCurrentConsoleFont

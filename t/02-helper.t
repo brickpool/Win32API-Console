@@ -25,9 +25,6 @@ BEGIN { subtest "Import private helper's" => sub {
 }}
 
 subtest 'GetOSVersion' => sub {
-  ok(Win32API::Console::_GetEditionName(), 'Get product name from Registry');
-  diag "$^E" if $^E;
-
   my $id = GetOSVersion();
   diag "$^E" if $^E;
   cmp_ok($id, '>=', Win32::GetOSVersion(), 'GetOSVersion() scalar context');
