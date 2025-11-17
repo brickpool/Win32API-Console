@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 11;
+use Test::More tests => 10;
 use FindBin;
 use lib "$FindBin::Bin/lib";
 
@@ -21,46 +21,47 @@ BEGIN {
 # Get a handle to the current console output
 my $hConsole = GetConsoleOutputHandle();
 diag "$^E" if $^E;
-unless ($hConsole) {
-  plan skip_all => "No real console output handle available";
-  exit;
-}
-isnt($hConsole, INVALID_HANDLE_VALUE, 'Obtained console handle');
-
-my %font;
-# GetCurrentConsoleFont
-my $r = GetCurrentConsoleFont($hConsole, 0, \%font);
-diag "$^E" if $^E;
-ok($r, 'GetCurrentConsoleFont returned font info');
-ok($font{dwFontSize}{Y} > 0, 'Font height is greater than 0');
-
-# GetConsoleFontSize
-my $size = GetConsoleFontSize($hConsole, $font{nFont});
-diag "$^E" if $^E;
-SKIP: {
-  skip 'GetConsoleFontSize not supported', 1 unless $size->{X};
-  ok($size->{X} && $size->{Y}, 'GetConsoleFontSize returned valid size');
-}
 
 SKIP: {
-  skip 'Get/SetCurrentConsoleFontEx not supported', 3 if (GetOSVersion)[1] < 6;
- 
-  # GetCurrentConsoleFontEx
-  my %fontEx;
-  $r = GetCurrentConsoleFontEx($hConsole, 0, \%fontEx);
-  diag "$^E" if $^E;
-  ok($r, 'GetCurrentConsoleFontEx returned extended font info');
-  ok($fontEx{FaceName}, 'Face name is valid');
+  skip "No real console output handle available" => 6 unless $hConsole;
 
-  # SetCurrentConsoleFontEx
-  $r = SetCurrentConsoleFontEx($hConsole, 0, \%fontEx);
+  my %font;
+  # GetCurrentConsoleFont
+  my $r = GetCurrentConsoleFont($hConsole, 0, \%font);
   diag "$^E" if $^E;
-  ok($r, 'Font info was successfully set by SetCurrentConsoleFontEx');
+  ok($r, 'GetCurrentConsoleFont returned font info');
+  ok($font{dwFontSize}{Y} > 0, 'Font height is greater than 0');
+
+  # GetConsoleFontSize
+  my $size = GetConsoleFontSize($hConsole, $font{nFont});
+  diag "$^E" if $^E;
+  SKIP: {
+    skip 'GetConsoleFontSize not supported', 1 unless $size->{X};
+    ok($size->{X} && $size->{Y}, 'GetConsoleFontSize returned valid size');
+  }
+
+  SKIP: {
+    skip 'Get/SetCurrentConsoleFontEx not supported', 3 
+      if (GetOSVersion)[1] < 6;
+  
+    # GetCurrentConsoleFontEx
+    my %fontEx;
+    $r = GetCurrentConsoleFontEx($hConsole, 0, \%fontEx);
+    diag "$^E" if $^E;
+    ok($r, 'GetCurrentConsoleFontEx returned extended font info');
+    ok($fontEx{FaceName}, 'Face name is valid');
+
+    # SetCurrentConsoleFontEx
+    $r = SetCurrentConsoleFontEx($hConsole, 0, \%fontEx);
+    diag "$^E" if $^E;
+    ok($r, 'Font info was successfully set by SetCurrentConsoleFontEx');
+  }
 }
 
 # GetNumberOfConsoleFonts
 my $count = eval { GetNumberOfConsoleFonts() };
 ok(!$@, 'GetNumberOfConsoleFonts called without exception');
+
 SKIP: {
   skip 'GetNumberOfConsoleFonts not supported', 1 unless defined $count;
   pass('GetNumberOfConsoleFonts returned a number');

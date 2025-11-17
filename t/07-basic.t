@@ -15,13 +15,12 @@ BEGIN {
 }
 
 # Get a handle to the current console output
-my $handle = GetConsoleOutputHandle();
+my $hConsole = GetConsoleOutputHandle();
 diag "$^E" if $^E;
-unless ($handle) {
-  plan skip_all => "No real console output handle available";
-  exit;
+TODO: {
+  todo_skip 'No real console output handle available' => 1 unless $hConsole;
+  isnt($hConsole, INVALID_HANDLE_VALUE, 'Obtained console handle');
 }
-isnt($handle, INVALID_HANDLE_VALUE, 'Obtained console handle');
 
 # Test: GetConsoleWindow
 my $hwnd = GetConsoleWindow();

@@ -20,7 +20,7 @@ use version;
 
 # version '...'
 our $version = '0.10';
-our $VERSION = 'v0.1.2';
+our $VERSION = 'v0.1.3';
 $VERSION = eval $VERSION;
 
 # authority '...'
@@ -765,6 +765,11 @@ use constant UNICODE => do {
       undef;
     }
   }
+};
+
+use constant HAS_WIN32_IPC => eval {
+  require Win32::IPC;
+  exists &Win32::IPC::wait;
 };
 
 # Use Types::Standard type checking if Type::Tiny is installed.
@@ -2115,16 +2120,74 @@ sub ReadConsoleInputA {    # $|undef ($handle, \%buffer)
         : UNICODE               ? ERROR_CALL_NOT_IMPLEMENTED
         : 0
         ;
-  # We use Peek to obtain the data
-  my $r = PeekConsoleInputA(@_);
-  if ($r) {
-    # The XS call is only made to consume the event
-    Win32::Console::_ReadConsoleInput($handle);
+  # The first part is only to use the XS version of Win32::Console, 
+  # which unfortunately only supports two event types. For unsupported events, 
+  # a fallback occurs without using Win32::Console.
 
-    # Ignore possible errors
+  # Check whether there is already an event in the queue
+  unless (Win32::Console::_GetNumberOfConsoleInputEvents($handle)) {
     Win32::SetLastError(0);
+    # Wait until event arrives
+    if (HAS_WIN32_IPC) {
+      # Use the WaitForSingleObject function from Win32::IPC
+      return undef unless bless(\$handle, 'Win32::IPC')->wait();
+    }
+    else {
+      # Win32::IPC is not available, so we have to poll
+      while (!Win32::Console::_GetNumberOfConsoleInputEvents($handle)) {
+        # Use Windows Sleep, otherwise we will block everything else
+        Win32::Sleep(20);
+      }
+    }
+    return undef if Win32::GetLastError();
   }
-  return $r ? $r : undef;
+
+  # We have an event in the queue, determining the event type
+  my ($type) = Win32::Console::_PeekConsoleInput($handle);
+  return undef if Win32::GetLastError();
+
+  # For events that are not supported by the Win32::Console module, 
+  # jump to our fallback (W) function
+  goto &ReadConsoleInputW unless $type;
+
+  # When we are here, we have received a keyboard or mouse event
+  my @ir = Win32::Console::_ReadConsoleInput($handle);
+  SWITCH: for ($type) {
+    KEY_EVENT == $_ and do {
+      %$buffer = (
+        EventType => $ir[0],
+        Event => {
+          bKeyDown          => $ir[1],
+          wRepeatCount      => $ir[2],
+          wVirtualKeyCode   => $ir[3],
+          wVirtualScanCode  => $ir[4],
+          uChar             => $ir[5],
+          dwControlKeyState => $ir[6],
+        },
+      );
+      last;
+    };
+    MOUSE_EVENT == $_ and do {
+      %$buffer = (
+        EventType => $ir[0],
+        Event => {
+          dwMousePosition => {
+            X => $ir[1],
+            Y => $ir[2],
+          },
+          dwButtonState       => $ir[3],
+          dwMeControlKeyState => $ir[4],
+          dwEventFlags        => $ir[5],
+        },
+      );
+      last;
+    };
+    DEFAULT: {
+      # It shouldn't be achieved, but who knows?
+      return undef;
+    }
+  }
+  return @ir > 1 ? 1 : undef;
 }
 
 sub ReadConsoleInputW {    # $|undef ($handle, \%buffer)
