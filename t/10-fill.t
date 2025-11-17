@@ -33,11 +33,11 @@ SKIP: {
 
   # Call the wrapper functions for FillConsoleOutputCharacter
   my $ok = FillConsoleOutputCharacterW(
-      $hConsole,
-      $char,
-      $length,
-      \%coord,
-      \$written
+    $hConsole,
+    $char,
+    $length,
+    \%coord,
+    \$written
   );
   diag "$^E" unless $ok;
 
@@ -48,11 +48,11 @@ SKIP: {
   $coord{X} = $written;
 
   $ok = FillConsoleOutputCharacterA(
-      $hConsole,
-      $char,
-      $length,
-      \%coord,
-      \$written
+    $hConsole,
+    $char,
+    $length,
+    \%coord,
+    \$written
   );
   diag "$^E" unless $ok;
 

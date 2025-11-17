@@ -24,7 +24,7 @@ jobs:
         run: perl -V
 
       - name: Install dependencies
-        run: cpanm --quiet --notest Win32::API Win32::Console Win32API::Registry Test::More Encode Exporter Hash::Util Win32 Win32API::File version
+        run: cpanm --skip-satisfied --quiet --notest Win32::API~0.77 Win32::Console~0.10 Test::More~0 Encode~0 Exporter~0 Hash::Util~0 Win32~0.44 Win32API::File~0.08 version~0.77
 
       - name: Run tests
         run: |

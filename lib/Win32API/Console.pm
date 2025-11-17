@@ -38,8 +38,8 @@ use Scalar::Util qw( readonly );
 use Hash::Util qw( lock_ref_keys );
 use Win32;
 use Win32::API;
-use Win32::Console     ();
-use Win32API::File     ();
+use Win32::Console ();
+use Win32API::File ();
 
 #--------
 # Imports
@@ -50,6 +50,7 @@ use Win32API::File     ();
 my (
   $AllocConsoleWithOptions, 
   $AttachConsole,
+  $FillConsoleOutputCharacterA,
   $FillConsoleOutputCharacterW,
   $FindWindow,
   $GetClientRect,
@@ -57,27 +58,34 @@ my (
   $GetConsoleFontSize,
   $GetConsoleOriginalTitleA,
   $GetConsoleOriginalTitleW,
+  $GetConsoleTitleA,
   $GetConsoleTitleW,
   $GetConsoleWindow,
   $GetCurrentConsoleFont,
   $GetCurrentConsoleFontEx,
   $GetNumberOfConsoleFonts,
+  $PeekConsoleInputA,
   $PeekConsoleInputW,
   $MultiByteToWideChar,
   $ReadConsoleW,
+  $ReadConsoleInputA,
   $ReadConsoleInputW,
   $ReadConsoleOutputW,
+  $ReadConsoleOutputCharacterA,
   $ReadConsoleOutputCharacterW,
   $RtlGetVersion,
   $ScrollConsoleScreenBufferW,
   $SetConsoleDisplayMode,
+  $SetConsoleTitleA,
   $SetConsoleTitleW,
   $SetCurrentConsoleFontEx,
   $WideCharToMultiByte,
   $WriteConsoleW,
   $WriteConsoleInputA,
   $WriteConsoleInputW,
+  $WriteConsoleOutputA,
   $WriteConsoleOutputW,
+  $WriteConsoleOutputCharacterA,
   $WriteConsoleOutputCharacterW,
 );
 
@@ -87,6 +95,16 @@ BEGIN {
       DWORD dwProcessId
     )'
   ) or die "Import AttachConsole failed: $^E";
+
+  $FillConsoleOutputCharacterA = Win32::API::More->new('kernel32',
+    'BOOL FillConsoleOutputCharacterA(
+      HANDLE  hConsoleOutput,
+      CHAR    cCharacter,
+      DWORD   nLength,
+      DWORD   dwWriteCoord,
+      LPDWORD lpNumberOfCharsWritten
+    )'
+  ) or die "Import FillConsoleOutputCharacterA failed: $^E";
 
   $FillConsoleOutputCharacterW = Win32::API::More->new('kernel32',
     'BOOL FillConsoleOutputCharacterW(
@@ -139,6 +157,13 @@ BEGIN {
     )'
   ) or die "Import GetConsoleOriginalTitleA failed: $^E";
 
+  $GetConsoleTitleA = Win32::API::More->new('kernel32',
+    'DWORD GetConsoleTitleA(
+      LPSTR lpConsoleTitle,
+      DWORD nSize
+    )'
+  ) or die "Import GetConsoleTitleA failed: $^E";
+
   $GetConsoleTitleW = Win32::API::More->new('kernel32',
     'DWORD GetConsoleTitleW(
       LPWSTR lpConsoleTitle,
@@ -173,6 +198,15 @@ BEGIN {
     )'
   ) or die "Import MultiByteToWideChar: $^E";
 
+  $PeekConsoleInputA = Win32::API::More->new('kernel32',
+    'BOOL PeekConsoleInputA(
+      HANDLE  hConsoleInput,
+      LPVOID  lpBuffer,
+      DWORD   nLength,
+      LPDWORD lpNumberOfEventsRead
+    )'
+  ) or die "Import PeekConsoleInputA failed: $^E";
+
   $PeekConsoleInputW = Win32::API::More->new('kernel32',
     'BOOL PeekConsoleInputW(
       HANDLE  hConsoleInput,
@@ -192,6 +226,15 @@ BEGIN {
     )'
   ) or die "Import ReadConsoleW failed: $^E";
 
+  $ReadConsoleInputA = Win32::API::More->new('kernel32',
+    'BOOL ReadConsoleInputA(
+      HANDLE  hConsoleInput,
+      LPVOID  lpBuffer,
+      DWORD   nLength,
+      LPDWORD lpNumberOfEventsRead
+    )'
+  ) or die "Import ReadConsoleInputA failed: $^E";
+
   $ReadConsoleInputW = Win32::API::More->new('kernel32',
     'BOOL ReadConsoleInputW(
       HANDLE  hConsoleInput,
@@ -210,6 +253,16 @@ BEGIN {
       LPVOID lpWriteRegion
     )'
   ) or die "Import ReadConsoleOutputW failed: $^E";
+
+  $ReadConsoleOutputCharacterA = Win32::API::More->new('kernel32',
+    'BOOL ReadConsoleOutputCharacterA(
+      HANDLE  hConsoleOutput,
+      LPSTR   lpCharacter,
+      DWORD   nLength,
+      DWORD   dwReadCoord,
+      LPDWORD lpNumberOfCharsRead
+    )'
+  ) or die "Import ReadConsoleOutputCharacterA failed: $^E";
 
   $ReadConsoleOutputCharacterW = Win32::API::More->new('kernel32',
     'BOOL ReadConsoleOutputCharacterW(
@@ -244,6 +297,12 @@ BEGIN {
       LPDWORD lpNewScreenBufferDimensions
     )'
   ) or die "Import SetConsoleDisplayMode failed: $^E";
+
+  $SetConsoleTitleA = Win32::API::More->new('kernel32',
+    'DWORD SetConsoleTitleA(
+      LPCSTR lpConsoleTitle,
+    )'
+  ) or die "Import SetConsoleTitleA failed: $^E";
 
   $SetConsoleTitleW = Win32::API::More->new('kernel32',
     'DWORD SetConsoleTitleW(
@@ -292,6 +351,16 @@ BEGIN {
     )'
   ) or die "Import WriteConsoleInputW: $^E";
 
+  $WriteConsoleOutputA = Win32::API::More->new('kernel32',
+    'BOOL WriteConsoleOutputA(
+      HANDLE  hConsoleOutput,
+      LPCWSTR lpBuffer,
+      DWORD   dwBufferSize,
+      DWORD   dwBufferCoord,
+      LPVOID  lpWriteRegion
+    )'
+  ) or die "Import WriteConsoleOutputA: $^E";
+
   $WriteConsoleOutputW = Win32::API::More->new('kernel32',
     'BOOL WriteConsoleOutputW(
       HANDLE  hConsoleOutput,
@@ -301,6 +370,16 @@ BEGIN {
       LPVOID  lpWriteRegion
     )'
   ) or die "Import WriteConsoleOutputW: $^E";
+
+  $WriteConsoleOutputCharacterA = Win32::API::More->new('kernel32',
+    'BOOL WriteConsoleOutputCharacterA(
+      HANDLE  hConsoleOutput,
+      LPCSTR  lpCharacter,
+      DWORD   nLength,
+      DWORD   dwWriteCoord,
+      LPDWORD lpNumberOfCharsWritten
+    )'
+  ) or die "Import WriteConsoleOutputCharacterA: $^E";
 
   $WriteConsoleOutputCharacterW = Win32::API::More->new('kernel32',
     'BOOL WriteConsoleOutputCharacterW(
@@ -767,11 +846,6 @@ use constant UNICODE => do {
   }
 };
 
-use constant HAS_WIN32_IPC => eval {
-  require Win32::IPC;
-  exists &Win32::IPC::wait;
-};
-
 # Use Types::Standard type checking if Type::Tiny is installed.
 use constant HAS_TYPE_TINY => eval {
   require Types::Standard;
@@ -1020,7 +1094,6 @@ sub FillConsoleOutputCharacterA {    # $|undef ($handle, $char, $length, \%coord
         : !COORD($coord)           ? ERROR_INVALID_PARAMETER
         : !_is_ScalarRef($written) ? ERROR_INVALID_PARAMETER
         : readonly($$written)      ? ERROR_INVALID_PARAMETER
-        : UNICODE                  ? ERROR_CALL_NOT_IMPLEMENTED
         : 0
         ;
   substr($char, 1) = '';
@@ -1042,6 +1115,11 @@ sub FillConsoleOutputCharacterA {    # $|undef ($handle, $char, $length, \%coord
       }
       $_ ? $_ : $char;
     }
+  }
+  if (UNICODE) {
+    my $dwWriteCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
+    return $FillConsoleOutputCharacterA->Call($handle, ord($char), $length, 
+      $dwWriteCoord, $$written = 0) || undef;
   }
   Win32::SetLastError(0);
   $$written = Win32::Console::_FillConsoleOutputCharacter($handle, $char, 
@@ -1502,13 +1580,20 @@ sub GetConsoleTitleA {    # $num|undef (\$buffer, $size)
         : !_is_Int($size)         ? ERROR_INVALID_PARAMETER
         : 0
         ;
-  Win32::SetLastError(0);
-  $$buffer = Win32::Console::_GetConsoleTitle();
-  return undef if Win32::GetLastError();
+  if (UNICODE) {
+    $$buffer = "\0" x $size;
+    my $r = $GetConsoleTitleA->Call($$buffer, $size) || return undef;
+    substr($$buffer, $r) = '';
+  }
+  else {
+    Win32::SetLastError(0);
+    $$buffer = Win32::Console::_GetConsoleTitle();
+    return undef if Win32::GetLastError();
 
-  # The Win32::Console XS function only supports 1024 characters
-  $size = CONSOLE_TITLE_SIZE if $size > CONSOLE_TITLE_SIZE;
-  substr($$buffer, $size) = '' if length($$buffer) > $size;
+    # The Win32::Console XS function only supports 1024 characters
+    $size = CONSOLE_TITLE_SIZE if $size > CONSOLE_TITLE_SIZE;
+    substr($$buffer, $size) = '' if length($$buffer) > $size;
+  }
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
   $$buffer = do { local $_;
@@ -1816,13 +1901,18 @@ sub PeekConsoleInputA {    # $|undef ($handle, \%buffer)
         : !_is_Int($handle)     ? ERROR_INVALID_HANDLE
         : !_is_HashRef($buffer) ? ERROR_INVALID_PARAMETER
         : readonly(%$buffer)    ? ERROR_INVALID_PARAMETER
-        : UNICODE               ? ERROR_CALL_NOT_IMPLEMENTED
         : 0
         ;
-  my @ir = Win32::Console::_PeekConsoleInput($handle);
+  my $lpBuffer = "\0" x INPUT_RECORD_SIZE;
+  my $read = 0;
+  return undef
+    unless $PeekConsoleInputA->Call($handle, $lpBuffer, 1, $read) && $read;
+
+  my @ir   = unpack('S', $lpBuffer);
   my $type = $ir[0] || 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
+      @ir = ( @ir, unpack('x4'.'LSSSCxL', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -1837,6 +1927,7 @@ sub PeekConsoleInputA {    # $|undef ($handle, \%buffer)
       last;
     };
     MOUSE_EVENT == $_ and do {
+      @ir = ( @ir, unpack('x4'.'SSLLL', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -1851,15 +1942,45 @@ sub PeekConsoleInputA {    # $|undef ($handle, \%buffer)
       );
       last;
     };
+    WINDOW_BUFFER_SIZE_EVENT == $_ and do {
+      @ir = ( @ir, unpack('x4'.'SS', $lpBuffer) );
+      %$buffer = (
+        EventType => $ir[0],
+        Event => {
+          dwSize => {
+            X => $ir[1],
+            Y => $ir[2],
+          },
+        },
+      );
+      last;
+    };
+    MENU_EVENT == $_ and do {
+      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
+      %$buffer = (
+        EventType => $ir[0],
+        Event => {
+          dwCommandId => $ir[1],
+        },
+      );
+      last;
+    };
+    FOCUS_EVENT == $_ and do {
+      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
+      %$buffer = (
+        EventType => $ir[0],
+        Event => {
+          bSetFocus => $ir[1],
+        },
+      );
+      last;
+    };
     DEFAULT: {
-      # For all other events, and if events are actually waiting, 
-      # jump to the W function, as these can be handled identically.
-      goto &PeekConsoleInputW
-        if Win32::Console::_GetNumberOfConsoleInputEvents($handle);
       %$buffer = ();
+      return undef;
     }
   }
-  return @ir > 1 ? 1 : undef;
+  return 1;
 }
 
 sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
@@ -1880,7 +2001,7 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
   my $type = $ir[0] || 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'LSSSSL', $buffer) );
+      @ir = ( @ir, unpack('x4'.'LSSSSL', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -1895,7 +2016,7 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     MOUSE_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'SSLLL', $buffer) );
+      @ir = ( @ir, unpack('x4'.'SSLLL', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -1911,7 +2032,7 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     WINDOW_BUFFER_SIZE_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'SS', $buffer) );
+      @ir = ( @ir, unpack('x4'.'SS', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -1924,7 +2045,7 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     MENU_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'L', $buffer) );
+      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -1934,7 +2055,7 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     FOCUS_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'L', $buffer) );
+      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -1945,9 +2066,10 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
     };
     DEFAULT: {
       %$buffer = ();
+      return undef;
     }
   }
-  return @ir > 1 ? 1 : undef;
+  return 1;
 }
 
 ###
@@ -2117,43 +2239,18 @@ sub ReadConsoleInputA {    # $|undef ($handle, \%buffer)
         : !_is_Int($handle)     ? ERROR_INVALID_HANDLE
         : !_is_HashRef($buffer) ? ERROR_INVALID_PARAMETER
         : readonly(%$buffer)    ? ERROR_INVALID_PARAMETER
-        : UNICODE               ? ERROR_CALL_NOT_IMPLEMENTED
         : 0
         ;
-  # The first part is only to use the XS version of Win32::Console, 
-  # which unfortunately only supports two event types. For unsupported events, 
-  # a fallback occurs without using Win32::Console.
+  my $lpBuffer = "\0" x INPUT_RECORD_SIZE;
+  my $read = 0;
+  return undef
+    unless $ReadConsoleInputA->Call($handle, $lpBuffer, 1, $read) && $read;
 
-  # Check whether there is already an event in the queue
-  unless (Win32::Console::_GetNumberOfConsoleInputEvents($handle)) {
-    Win32::SetLastError(0);
-    # Wait until event arrives
-    if (HAS_WIN32_IPC) {
-      # Use the WaitForSingleObject function from Win32::IPC
-      return undef unless bless(\$handle, 'Win32::IPC')->wait();
-    }
-    else {
-      # Win32::IPC is not available, so we have to poll
-      while (!Win32::Console::_GetNumberOfConsoleInputEvents($handle)) {
-        # Use Windows Sleep, otherwise we will block everything else
-        Win32::Sleep(20);
-      }
-    }
-    return undef if Win32::GetLastError();
-  }
-
-  # We have an event in the queue, determining the event type
-  my ($type) = Win32::Console::_PeekConsoleInput($handle);
-  return undef if Win32::GetLastError();
-
-  # For events that are not supported by the Win32::Console module, 
-  # jump to our fallback (W) function
-  goto &ReadConsoleInputW unless $type;
-
-  # When we are here, we have received a keyboard or mouse event
-  my @ir = Win32::Console::_ReadConsoleInput($handle);
+  my @ir   = unpack('S', $lpBuffer);
+  my $type = $ir[0] || 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
+      @ir = ( @ir, unpack('x4'.'LSSSCxL', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2168,6 +2265,7 @@ sub ReadConsoleInputA {    # $|undef ($handle, \%buffer)
       last;
     };
     MOUSE_EVENT == $_ and do {
+      @ir = ( @ir, unpack('x4'.'SSLLL', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2182,12 +2280,45 @@ sub ReadConsoleInputA {    # $|undef ($handle, \%buffer)
       );
       last;
     };
+    WINDOW_BUFFER_SIZE_EVENT == $_ and do {
+      @ir = ( @ir, unpack('x4'.'SS', $lpBuffer) );
+      %$buffer = (
+        EventType => $ir[0],
+        Event => {
+          dwSize => {
+            X => $ir[1],
+            Y => $ir[2],
+          },
+        },
+      );
+      last;
+    };
+    MENU_EVENT == $_ and do {
+      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
+      %$buffer = (
+        EventType => $ir[0],
+        Event => {
+          dwCommandId => $ir[1],
+        },
+      );
+      last;
+    };
+    FOCUS_EVENT == $_ and do {
+      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
+      %$buffer = (
+        EventType => $ir[0],
+        Event => {
+          bSetFocus => $ir[1],
+        },
+      );
+      last;
+    };
     DEFAULT: {
-      # It shouldn't be achieved, but who knows?
+      %$buffer = ();
       return undef;
     }
   }
-  return @ir > 1 ? 1 : undef;
+  return 1;
 }
 
 sub ReadConsoleInputW {    # $|undef ($handle, \%buffer)
@@ -2431,13 +2562,18 @@ sub ReadConsoleOutputCharacterA {    # $|undef ($handle, \$buffer, $length, \%co
         : !COORD($coord)          ? ERROR_INVALID_PARAMETER
         : !_is_ScalarRef($read)   ? ERROR_INVALID_PARAMETER
         : readonly($$read)        ? ERROR_INVALID_PARAMETER
-        : UNICODE                 ? ERROR_CALL_NOT_IMPLEMENTED
         : 0
         ;
   $$buffer = "\0" x $length;
-  $$read = 0;
-  my $r = Win32::Console::_ReadConsoleOutputCharacter($handle, 
-    $$buffer, $length, @{$coord}{qw(X Y)}) || return undef;
+  if (UNICODE) {
+    my $dwReadCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
+    $ReadConsoleOutputCharacterA->Call($handle, $$buffer, $length, 
+      $dwReadCoord, $$read = 0) || return undef;
+  }
+  else {
+    $$read = Win32::Console::_ReadConsoleOutputCharacter($handle, $$buffer, 
+      $length, @{$coord}{qw(X Y)}) || return undef;
+  }
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
   $$buffer = do { local $_;
@@ -2511,7 +2647,6 @@ sub ScrollConsoleScreenBufferA {    # $|undef ($handle, \%scrollRect, \%clipRect
         : defined $clipRect && !SMALL_RECT($clipRect) ? ERROR_INVALID_PARAMETER
         : !COORD($destCoord)                          ? ERROR_INVALID_PARAMETER
         : !_is_Str($fill)                             ? ERROR_INVALID_PARAMETER
-        : UNICODE                                  ? ERROR_CALL_NOT_IMPLEMENTED
         : 0
         ;
   # Unpack CHAR_INFO structure: ANSI character (1 byte) and attribute (2 bytes)
@@ -2937,7 +3072,6 @@ sub SetConsoleTitleA {    # $|undef ($title)
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 1          ? ERROR_BAD_ARGUMENTS
         : !_is_Str($title) ? ERROR_INVALID_PARAMETER
-        : UNICODE          ? ERROR_CALL_NOT_IMPLEMENTED
         : 0
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
@@ -2949,7 +3083,10 @@ sub SetConsoleTitleA {    # $|undef ($title)
       $_ ? $_ : $title;
     }
   }
-  return Win32::Console::_SetConsoleTitle($title) || undef;
+  my $r = UNICODE
+        ? $SetConsoleTitleA->Call($title) 
+        : Win32::Console::_SetConsoleTitle($title);
+  return $r ? $r : undef;
 }
 
 sub SetConsoleTitleW {    # $|undef ($title)
@@ -3257,19 +3394,30 @@ sub WriteConsoleOutputA {    # $|undef ($handle, $buffer, \%size, \%coord, \%reg
         : !COORD($coord)       ? ERROR_INVALID_PARAMETER
         : !SMALL_RECT($region) ? ERROR_INVALID_PARAMETER
         : readonly(%$region)   ? ERROR_INVALID_PARAMETER
-        : UNICODE              ? ERROR_CALL_NOT_IMPLEMENTED
         : 0
         ;
-  my @rect = Win32::Console::_WriteConsoleOutput($handle, $buffer, 
-    @{$size}{qw(X Y)}, @{$coord}{qw(X Y)}, 
-    @{$region}{qw(Left Top Right Bottom)});
+  my ($r, @rect);
+  if (UNICODE) {
+    my $dwBufferSize  = unpack('L', pack('SS', @{$size}{qw(X Y)}));
+    my $dwBufferCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
+    my $lpWriteRegion = pack('S4', @{$region}{qw(Left Top Right Bottom)});
+    $r = $WriteConsoleOutputA->Call($handle, $buffer, $dwBufferSize, 
+      $dwBufferCoord, $lpWriteRegion);
+    @rect = unpack('S4', $lpWriteRegion);
+  }
+  else {
+    @rect = Win32::Console::_WriteConsoleOutput($handle, $buffer, 
+      @{$size}{qw(X Y)}, @{$coord}{qw(X Y)}, 
+      @{$region}{qw(Left Top Right Bottom)});
+    $r = @rect > 1 ? 1 : 0;
+  }
   %$region = (
     Left   => $rect[0],
     Top    => $rect[1],
     Right  => $rect[2],
     Bottom => $rect[3],
   );
-  return @rect > 1 ? 1 : undef;
+  return $r ? $r : undef;
 }
 
 sub WriteConsoleOutputW {   # $|undef ($handle, $buffer, \%size, \%coord, \%region)
@@ -3377,10 +3525,17 @@ sub WriteConsoleOutputCharacterA {    # $|undef ($handle, $buffer, \%coord, \$wr
       $_ ? $_ : $buffer;
     }
   }
-  Win32::SetLastError(0);
-  $$written = Win32::Console::_WriteConsoleOutputCharacter($handle, 
-    $buffer, @{$coord}{qw(X Y)});
-  return Win32::GetLastError() ? undef : 1;
+  if (UNICODE) {
+    my $dwWriteCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
+    return $WriteConsoleOutputCharacterA->Call($handle, $buffer, 
+      length($buffer), $dwWriteCoord, $$written = 0) || undef;
+  }
+  else {
+    Win32::SetLastError(0);
+    $$written = Win32::Console::_WriteConsoleOutputCharacter($handle, 
+      $buffer, @{$coord}{qw(X Y)});
+    return Win32::GetLastError() ? undef : 1;
+  }
 }
 
 sub WriteConsoleOutputCharacterW {    # $|undef ($handle, $buffer, \%coord, \$written)
