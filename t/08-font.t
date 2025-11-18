@@ -14,7 +14,6 @@ BEGIN {
     GetNumberOfConsoleFonts
     GetOSVersion
     SetCurrentConsoleFontEx
-    INVALID_HANDLE_VALUE
   );
 }
 

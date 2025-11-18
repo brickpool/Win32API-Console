@@ -20,7 +20,7 @@ use version;
 
 # version '...'
 our $version = '0.10';
-our $VERSION = 'v0.1.3';
+our $VERSION = 'v0.1.4';
 $VERSION = eval $VERSION;
 
 # authority '...'
@@ -70,6 +70,7 @@ my (
   $ReadConsoleW,
   $ReadConsoleInputA,
   $ReadConsoleInputW,
+  $ReadConsoleOutputA,
   $ReadConsoleOutputW,
   $ReadConsoleOutputCharacterA,
   $ReadConsoleOutputCharacterW,
@@ -80,6 +81,7 @@ my (
   $SetConsoleTitleW,
   $SetCurrentConsoleFontEx,
   $WideCharToMultiByte,
+  $WriteConsoleA,
   $WriteConsoleW,
   $WriteConsoleInputA,
   $WriteConsoleInputW,
@@ -244,10 +246,20 @@ BEGIN {
     )'
   ) or die "Import ReadConsoleInputW failed: $^E";
 
+  $ReadConsoleOutputA = Win32::API::More->new('kernel32',
+    'BOOL ReadConsoleOutputA(
+      HANDLE hConsoleInput,
+      LPVOID lpBuffer,
+      DWORD  dwBufferSize,
+      DWORD  dwBufferCoord,
+      LPVOID lpWriteRegion
+    )'
+  ) or die "Import ReadConsoleOutputA failed: $^E";
+
   $ReadConsoleOutputW = Win32::API::More->new('kernel32',
     'BOOL ReadConsoleOutputW(
       HANDLE hConsoleInput,
-      LPWSTR lpBuffer,
+      LPVOID lpBuffer,
       DWORD  dwBufferSize,
       DWORD  dwBufferCoord,
       LPVOID lpWriteRegion
@@ -322,6 +334,16 @@ BEGIN {
       LPBOOL  lpUsedDefaultChar
     )'
   ) or die "Import WideCharToMultiByte: $^E";
+
+  $WriteConsoleA = Win32::API::More->new('kernel32',
+    'BOOL WriteConsoleA(
+      HANDLE  hConsoleOutput,
+      LPCSTR  lpBuffer,
+      DWORD   nNumberOfCharsToWrite,
+      LPDWORD lpNumberOfCharsWritten,
+      LPVOID  lpReserved
+    )'
+  ) or die "Import WriteConsoleA: $^E";
 
   $WriteConsoleW = Win32::API::More->new('kernel32',
     'BOOL WriteConsoleW(
@@ -936,11 +958,11 @@ sub AllocConsole {    # $|undef ()
 sub AllocConsoleWithOptions {    # $|undef ($mode, $show|undef, \$result)
   my ($mode, $show, $result) = @_;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
-    $^E = @_ != 3                           ? ERROR_BAD_ARGUMENTS
-        : !_is_Int($mode)                   ? ERROR_INVALID_PARAMETER 
-        : defined($show) && !_is_Int($show) ? ERROR_INVALID_PARAMETER
-        : !_is_ScalarRef($result)           ? ERROR_INVALID_PARAMETER
-        : readonly($$result)                ? ERROR_INVALID_PARAMETER
+    $^E = @_ != 3                          ? ERROR_BAD_ARGUMENTS
+        : !_is_Int($mode)                  ? ERROR_INVALID_PARAMETER 
+        : defined $show && !_is_Int($show) ? ERROR_INVALID_PARAMETER
+        : !_is_ScalarRef($result)          ? ERROR_INVALID_PARAMETER
+        : readonly($$result)               ? ERROR_INVALID_PARAMETER
         : 0
         ;
   unless (defined $AllocConsoleWithOptions) {
@@ -1060,7 +1082,7 @@ sub FillConsoleOutputAttribute {    # $|undef ($handle, $attr, $length, \%coord,
         ;
   Win32::SetLastError(0);
   $$written = Win32::Console::_FillConsoleOutputAttribute($handle, $attr, 
-    $length, @{$coord}{qw(X Y)});
+    $length, COORD::list($coord));
   return Win32::GetLastError() ? undef : 1;
 }
 
@@ -1096,35 +1118,18 @@ sub FillConsoleOutputCharacterA {    # $|undef ($handle, $char, $length, \%coord
         : readonly($$written)      ? ERROR_INVALID_PARAMETER
         : 0
         ;
-  substr($char, 1) = '';
-  # Only convert if $_ is an internal UTF-8 string from Perl, otherwise it 
-  # is already ANSI compatible.
-  if (Encode::is_utf8($char)) {
-    $char = do { local $_;
-      # Get the current console output code page (e.g., 65001 for UTF-8) and if
-      # the console is not already using UTF-8, encode the string
-      my $cpi = Win32::GetConsoleOutputCP();
-      if ($cpi != CP_UTF8) {
-        # Convert the UTF-8 string to a UTF-16LE wide string and set $_ 
-        # with the encoded UTF-16 version
-        $_ = _MultiByteToWideChar($char, CP_UTF8);
-
-        # Convert the UTF-16LE wide string to a multibyte string using the 
-        # target code page and replace $_ with the encoded multibyte version
-        $_ = _WideCharToMultiByte($_, $cpi);
-      }
-      $_ ? $_ : $char;
-    }
-  }
-  if (UNICODE) {
-    my $dwWriteCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
-    return $FillConsoleOutputCharacterA->Call($handle, ord($char), $length, 
-      $dwWriteCoord, $$written = 0) || undef;
-  }
-  Win32::SetLastError(0);
-  $$written = Win32::Console::_FillConsoleOutputCharacter($handle, $char, 
-    $length, @{$coord}{qw(X Y)});
-  return Win32::GetLastError() ? undef : 1;
+  $char = Encode::ANSI::encode(substr($char, 0, 1), 
+    Win32::GetConsoleOutputCP());
+  my $r = UNICODE
+    ? $FillConsoleOutputCharacterA->Call($handle, ord($char), $length, 
+        COORD::pack($coord), $$written = 0)
+    : do {
+      Win32::SetLastError(0);
+      $$written = Win32::Console::_FillConsoleOutputCharacter($handle, $char, 
+        $length, COORD::list($coord));
+      Win32::GetLastError() ? 0 : 1;
+    };
+  return $r ? $r : undef;
 }
 
 sub FillConsoleOutputCharacterW {    # $|undef ($handle, $char, $length, \%coord, \$written)
@@ -1139,9 +1144,8 @@ sub FillConsoleOutputCharacterW {    # $|undef ($handle, $char, $length, \%coord
         : readonly($$written)      ? ERROR_INVALID_PARAMETER
         : 0
         ;
-  my $dwWriteCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
   return $FillConsoleOutputCharacterW->Call($handle, ord($char), $length, 
-    $dwWriteCoord, $$written = 0) || undef;
+    COORD::pack($coord), $$written = 0) || undef;
 }
 
 ###
@@ -1342,7 +1346,7 @@ sub GetConsoleFontSize {    # \%coord|undef ($handle, $index)
   my $dwFontSize = $GetConsoleFontSize->Call($handle, $index);
 
   # Extract the returned values: font width, height
-  my ($width, $height) = unpack('SS', pack('L', $dwFontSize));
+  my ($width, $height) = COORD::unpack($dwFontSize);
 
   if (EMULATE_FONT_SIZE and !$width || !$height) {
     my $err = Win32::GetLastError();
@@ -1353,7 +1357,7 @@ sub GetConsoleFontSize {    # \%coord|undef ($handle, $index)
       die unless $hwnd;
 
       # Client rect does not include title bar, borders, scroll bars, status bar
-      my $rect = pack('L4', 0 x 4);
+      my $rect = pack('L4', (0) x 4);
       my $r = $GetClientRect->Call($hwnd, $rect);
       # warn "$r";
       die unless $r;
@@ -1416,12 +1420,7 @@ sub GetConsoleOriginalTitleA {    # $num|undef ($handle, $index)
   substr($$buffer, $r) = '';
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  $$buffer = do { local $_;
-    # Using the actual code page
-    $_ = _MultiByteToWideChar($$buffer);
-    $_ = _WideCharToMultiByte($_, CP_UTF8);
-    $_ ? $_ : $$buffer;
-  };
+  $$buffer = Encode::ANSI::decode($$buffer, CP_ACP);
   return length($$buffer);
 }
 
@@ -1438,11 +1437,7 @@ sub GetConsoleOriginalTitleW {    # $num|undef ($handle, $index)
   my $r = $GetConsoleOriginalTitleW->Call($$buffer, $size) || return undef;
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  $$buffer = do { local $_;
-    $_ = bytes::substr($$buffer, 0, 2 * $r);
-    $_ = _WideCharToMultiByte($_, CP_UTF8);
-    $_;
-  };
+  $$buffer = _WideCharToMultiByte(bytes::substr($$buffer, 0, 2 * $r), CP_UTF8);
   return length($$buffer);
 }
 
@@ -1580,28 +1575,22 @@ sub GetConsoleTitleA {    # $num|undef (\$buffer, $size)
         : !_is_Int($size)         ? ERROR_INVALID_PARAMETER
         : 0
         ;
+  my $r;
   if (UNICODE) {
     $$buffer = "\0" x $size;
-    my $r = $GetConsoleTitleA->Call($$buffer, $size) || return undef;
-    substr($$buffer, $r) = '';
+    $r = $GetConsoleTitleA->Call($$buffer, $size);
   }
   else {
     Win32::SetLastError(0);
     $$buffer = Win32::Console::_GetConsoleTitle();
-    return undef if Win32::GetLastError();
-
+    $r = Win32::GetLastError() ? 0 : 1;
     # The Win32::Console XS function only supports 1024 characters
     $size = CONSOLE_TITLE_SIZE if $size > CONSOLE_TITLE_SIZE;
-    substr($$buffer, $size) = '' if length($$buffer) > $size;
   }
+  return undef unless $r;
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  $$buffer = do { local $_;
-    # Using the actual code page
-    $_ = _MultiByteToWideChar($$buffer);
-    $_ = _WideCharToMultiByte($_, CP_UTF8);
-    $_ ? $_ : $$buffer;
-  };
+  $$buffer = Encode::ANSI::decode(substr($$buffer, 0, $size), CP_ACP);
   return length($$buffer);
 }
 
@@ -1619,11 +1608,7 @@ sub GetConsoleTitleW {    # $num|undef (\$buffer, $size)
   my $r = $GetConsoleTitleW->Call($$buffer, $size) || return undef;
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  $$buffer = do { local $_;
-    $_ = bytes::substr($$buffer, 0, 2 * $r);
-    $_ = _WideCharToMultiByte($_, CP_UTF8);
-    $_;
-  };
+  $$buffer = _WideCharToMultiByte(bytes::substr($$buffer, 0, 2 * $r), CP_UTF8);
   return length($$buffer);
 }
 
@@ -1640,8 +1625,8 @@ sub GetConsoleWindow {    # $hwnd|undef ()
         : 0
         ;
   Win32::SetLastError(0);
-  my $r = $GetConsoleWindow->Call();
-  return Win32::GetLastError() ? undef : $r;
+  my $handle = $GetConsoleWindow->Call();
+  return Win32::GetLastError() ? undef : $handle;
 }
 
 ###
@@ -1827,8 +1812,8 @@ sub GetNumberOfConsoleFonts {    # $num|undef ()
     return undef;
   }
   Win32::SetLastError(0);
-  my $r = $GetNumberOfConsoleFonts->Call();
-  Win32::GetLastError() ? undef : $r;
+  my $num = $GetNumberOfConsoleFonts->Call();
+  Win32::GetLastError() ? undef : $num;
 }
 
 ###
@@ -2099,28 +2084,23 @@ sub ReadConsoleA {    # $|undef ($handle, \$buffer, $length, \$read, |undef)
         : !_is_Int($length)       ? ERROR_INVALID_PARAMETER
         : !_is_ScalarRef($read)   ? ERROR_INVALID_PARAMETER
         : readonly($$read)        ? ERROR_INVALID_PARAMETER
-        : UNICODE                 ? ERROR_CALL_NOT_IMPLEMENTED
         : 0
         ;
   $$buffer = "\0" x $length;
-  $$read = 0;
-  Win32::SetLastError(0);
-  my $r = Win32::Console::_ReadConsole($handle, $$buffer, $length);
-  return undef if Win32::GetLastError();
-  substr($$buffer, $r) = '';
+  my $r = UNICODE
+    ? $ReadConsoleW->Call($handle, $$buffer, $length, $$read = 0, undef)
+    : do {
+      Win32::SetLastError(0);
+      $$read = Win32::Console::_ReadConsole($handle, $$buffer, $length) || 0;
+      Win32::GetLastError() ? 0 : 1;
+    };
+  return undef unless $r;
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  $$buffer = do { local $_;
-    # Using the console input code page
-    my $cpi = Win32::GetConsoleCP();
-    if ($cpi != CP_UTF8) {
-      $_ = _MultiByteToWideChar($$buffer, $cpi);
-      $_ = _WideCharToMultiByte($_, CP_UTF8);
-    }
-    $_ ? $_ : $$buffer;
-  };
+  $$buffer = Encode::ANSI::decode(substr($$buffer, 0, $$read), 
+    Win32::GetConsoleCP());
   $$read = length($$buffer);
-  return 1;
+  return $r;
 }
 
 sub ReadConsoleW {    # $|undef ($handle, \$buffer, $length, \$read, |\%control|undef)
@@ -2133,8 +2113,8 @@ sub ReadConsoleW {    # $|undef ($handle, \$buffer, $length, \$read, |\%control|
         : !_is_Int($length)       ? ERROR_INVALID_PARAMETER
         : !_is_ScalarRef($read)   ? ERROR_INVALID_PARAMETER
         : readonly($$read)        ? ERROR_INVALID_PARAMETER
-        : defined $control && !CONSOLE_READCONSOLE_CONTROL(
-            $control)             ? ERROR_INVALID_PARAMETER
+        : defined $control && !CONSOLE_READCONSOLE_CONTROL($control)
+                                  ? ERROR_INVALID_PARAMETER
         : 0
         ;
   $$buffer = "\0" x (2 * $length);
@@ -2147,7 +2127,7 @@ sub ReadConsoleW {    # $|undef ($handle, \$buffer, $length, \$read, |\%control|
       dwControlKeyState
     )});
   }
-  return $ReadConsoleW->Call($handle, $$buffer, $length, $$read, 
+  return $ReadConsoleW->Call($handle, $$buffer, $length, $$read = 0, 
     $pInputControl) || undef;
 }
 
@@ -2442,13 +2422,18 @@ sub ReadConsoleOutputA {    # $|undef ($handle, \$buffer, \%size, \%coord, \%reg
         : !COORD($coord)          ? ERROR_INVALID_PARAMETER
         : !SMALL_RECT($region)    ? ERROR_INVALID_PARAMETER
         : readonly(%$region)      ? ERROR_INVALID_PARAMETER
-        : UNICODE                 ? ERROR_CALL_NOT_IMPLEMENTED
         : 0
         ;
-  $$buffer = "\0" x ($size->{X} * $size->{Y});
-  my @rect = Win32::Console::_ReadConsoleOutput($handle, $$buffer, 
-    @{$size}{qw(X Y)}, @{$coord}{qw(X Y)}, 
-    @{$region}{qw(Left Top Right Bottom)});
+  $$buffer = "\0" x (4 * $size->{X} * $size->{Y});
+  my @rect = UNICODE 
+    ? do {
+        my $rect = SMALL_RECT::pack($region);
+        my $r = $ReadConsoleOutputA->Call($handle, $$buffer, COORD::pack($size), 
+          COORD::pack($coord), $rect);
+        SMALL_RECT::unpack($rect);
+      }
+    : Win32::Console::_ReadConsoleOutput($handle, $$buffer, COORD::list($size), 
+      COORD::list($coord), SMALL_RECT::list($region));
   %$region = (
     Left   => $rect[0],
     Top    => $rect[1],
@@ -2471,13 +2456,11 @@ sub ReadConsoleOutputW {    # $|undef ($handle, \$buffer, \%size, \%coord, \%reg
         : readonly(%$region)      ? ERROR_INVALID_PARAMETER
         : 0
         ;
-  $$buffer = "\0" x ($size->{X} * $size->{Y});
-  my $dwBufferSize  = unpack('L', pack('SS', @{$size}{qw(X Y)}));
-  my $dwBufferCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
-  my $lpWriteRegion = pack('S4', @{$region}{qw(Left Top Right Bottom)});
-  my $r = $ReadConsoleOutputW->Call($handle, $$buffer, $dwBufferSize, 
-    $dwBufferCoord, $lpWriteRegion);
-  my @rect = unpack('S4', $lpWriteRegion);
+  $$buffer = "\0" x (4 * $size->{X} * $size->{Y});
+  my $rect = SMALL_RECT::pack($region);
+  my $r = $ReadConsoleOutputW->Call($handle, $$buffer, COORD::pack($size), 
+    COORD::pack($coord), $rect);
+  my @rect = SMALL_RECT::unpack($rect);
   %$region = (
     Left   => $rect[0],
     Top    => $rect[1],
@@ -2525,7 +2508,7 @@ sub ReadConsoleOutputAttribute {    # $|undef ($handle, \$buffer, $length, \%coo
   }
   Win32::SetLastError(0);
   $$buffer = Win32::Console::_ReadConsoleOutputAttribute($handle, $length, 
-    @{$coord}{qw(X Y)}) || '';
+    COORD::list($coord)) || '';
   $$read = bytes::length($$buffer);
   # Unfortunately, the XS function only processes lower bytes and not words.
   $$buffer = pack('S*', unpack('C*', $$buffer)) if $$read;
@@ -2565,28 +2548,20 @@ sub ReadConsoleOutputCharacterA {    # $|undef ($handle, \$buffer, $length, \%co
         : 0
         ;
   $$buffer = "\0" x $length;
-  if (UNICODE) {
-    my $dwReadCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
-    $ReadConsoleOutputCharacterA->Call($handle, $$buffer, $length, 
-      $dwReadCoord, $$read = 0) || return undef;
-  }
-  else {
-    $$read = Win32::Console::_ReadConsoleOutputCharacter($handle, $$buffer, 
-      $length, @{$coord}{qw(X Y)}) || return undef;
-  }
+  my $r = UNICODE
+    ? $ReadConsoleOutputCharacterA->Call($handle, $$buffer, $length, 
+        COORD::pack($coord), $$read = 0)
+    : Win32::Console::_ReadConsoleOutputCharacter($handle, $$buffer, 
+        $length, COORD::list($coord));
+  return undef unless $r;
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  $$buffer = do { local $_;
-    # Using the console output code page
-    my $cpi = Win32::GetConsoleOutputCP();
-    if ($cpi != CP_UTF8) {
-      $_ = _MultiByteToWideChar($$buffer, $cpi);
-      $_ = _WideCharToMultiByte($_, CP_UTF8);
-    }
-    $_ ? $_ : $$buffer;
-  };
+  $$buffer = Encode::ANSI::decode(
+    substr($$buffer, 0, UNICODE ? $$read : length($$buffer)), 
+    Win32::GetConsoleOutputCP()
+  );
   $$read = length($$buffer);
-  return 1;
+  return $r;
 }
 
 sub ReadConsoleOutputCharacterW {    # $|undef ($handle, \$buffer, $length, \%coord, \$read)
@@ -2606,16 +2581,12 @@ sub ReadConsoleOutputCharacterW {    # $|undef ($handle, \$buffer, $length, \%co
   $$buffer = "\0" x (2 * $length);
 
   # Pack COORD structure (X and Y) into a DWORD for the API call
-  my $dwReadCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
   my $r = $ReadConsoleOutputCharacterW->Call($handle, $$buffer, $length, 
-    $dwReadCoord, $$read = 0) || undef;
+    COORD::pack($coord), $$read = 0) || undef;
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  $$buffer = do { local $_;
-    $_ = bytes::substr($$buffer, 0, 2 * $$read);
-    $_ = _WideCharToMultiByte($_, CP_UTF8);
-    $_;
-  };
+  $$buffer = _WideCharToMultiByte(bytes::substr($$buffer, 0, 2 * $$read), 
+    CP_UTF8);
   return defined $$buffer ? $r : undef;
 }
 
@@ -2649,18 +2620,24 @@ sub ScrollConsoleScreenBufferA {    # $|undef ($handle, \%scrollRect, \%clipRect
         : !_is_Str($fill)                             ? ERROR_INVALID_PARAMETER
         : 0
         ;
-  # Unpack CHAR_INFO structure: ANSI character (1 byte) and attribute (2 bytes)
-  my ($char, $attr) = unpack('CxS', pack('L', $fill));
+  # Unpack CHAR_INFO structure: character (2 bytes) and attribute (2 bytes)
+  my ($char, $attr) = unpack('WS', pack('L', $fill));
+
+  # If the Win32::Console XS function is not an ANSI function, simply convert 
+  # the Perl string to WCHAR; otherwise, convert the Perl string to ANSI. 
+  $char = UNICODE 
+    ? _MultiByteToWideChar($char, CP_UTF8)
+    : Encode::ANSI::encode($char, Win32::GetConsoleOutputCP());
 
   # Calls the internal Win32::Console XS function, which uses a different order
   return Win32::Console::_ScrollConsoleScreenBuffer(
     $handle,                                    # console output handle
-    @{$scrollRect}{qw(Left Top Right Bottom)},  # source rectangle to scroll
-    @{$destCoord}{qw(X Y)},                     # destination coordinate
+    SMALL_RECT::list($scrollRect),              # source rectangle to scroll
+    COORD::list($destCoord),                    # destination coordinate
     $char, $attr,                               # fill character and attribute
     $clipRect                                   # optional clipping rectangle
-      ? @{$clipRect}  {qw(Left Top Right Bottom)} 
-      : @{$scrollRect}{qw(Left Top Right Bottom)}
+      ? SMALL_RECT::list($clipRect)
+      : SMALL_RECT::list($scrollRect)
   ) || undef;
 }
 
@@ -2676,24 +2653,15 @@ sub ScrollConsoleScreenBufferW {    # $|undef ($handle, \%scrollRect, \%clipRect
         : 0
         ;
 
-  # Pack the scroll rectangle (SMALL_RECT) as 4 unsigned shorts
-  my $lpScrollRectangle = pack('S4', @{$scrollRect}{qw(Left Top Right Bottom)});
-  
-  # Optionally pack the clipping rectangle if provided
-  my $lpClipRectangle = $clipRect 
-                      ? pack('S4', @{$clipRect}{qw(Left Top Right Bottom)}) 
-                      : undef;
-  
-  # Pack the destination coordinate (COORD) as a DWORD: X and Y
-  my $dwDestinationOrigin = unpack('L', pack('SS', @{$destCoord}{qw(X Y)}));
-
   # Call the Windows API ScrollConsoleScreenBufferW with all parameters
   return $ScrollConsoleScreenBufferW->Call(
-    $handle,                # console output handle
-    $lpScrollRectangle,     # source rectangle to scroll
-    $lpClipRectangle,       # optional clipping rectangle
-    $dwDestinationOrigin,   # destination coordinate
-    $fill                   # CHAR_INFO structure for fill (char and attr)
+    $handle,                                    # console output handle
+    SMALL_RECT::pack($scrollRect),              # source rectangle to scroll
+    $clipRect                                   # optional clipping rectangle
+      ? SMALL_RECT::pack($clipRect) 
+      : undef,                  
+    COORD::pack($destCoord),                    # destination coordinate
+    $fill                                       # CHAR_INFO struct for fill
   ) || undef;
 }
 
@@ -2832,7 +2800,7 @@ sub SetConsoleCursorPosition {    # $|undef ($handle, \%coord)
         : 0
         ;
   return Win32::Console::_SetConsoleCursorPosition($handle, 
-    @{$coord}{qw(X Y)}) || undef;
+    COORD::list($coord)) || undef;
 }
 
 ###
@@ -2863,12 +2831,10 @@ sub SetConsoleDisplayMode {    # $|undef ($handle, $flags, \%coord)
   my ($x, $y) = (0, 0);
   my $r;
   unless (EMULATE_DISPLAY_MODE) {
-    my $lpDimensions = unpack('L', pack('SS', $x, $y));
-    $r = $SetConsoleDisplayMode->Call($handle, $flags, $lpDimensions);
-    if ($r) {
-      # Extract the X and Y coordinates from the obtained DWORD (COORD):
-      ($x, $y) = unpack('SS', pack('L', $lpDimensions));
-    } 
+    my $dimension = COORD::pack($x, $y);
+    if ($r = $SetConsoleDisplayMode->Call($handle, $flags, $dimension)) {
+      ($x, $y) = COORD::unpack($dimension);
+    }
   }
   else {
     TRY: eval {
@@ -2934,11 +2900,7 @@ sub SetCurrentConsoleFontEx {    # $|undef ($handle, $max, \%info)
   }
 
   # Encode FaceName to WCHAR
-  my $wide = eval { local $_;
-    $_ = Encode::encode('UTF-16LE', substr($info->{FaceName}, 0, LF_FACESIZE) );
-    Win32::SetLastError(0);
-    $_;
-  };
+  my $wide = _MultiByteToWideChar($info->{FaceName}, CP_UTF8);
 
   # Pack the CONSOLE_FONT_INFOEX structure with all required fields:
   # cbSize (DWORD), nFont (DWORD), dwFontSize.X (SHORT), dwFontSize.Y (SHORT),
@@ -2950,7 +2912,7 @@ sub SetCurrentConsoleFontEx {    # $|undef ($handle, $max, \%info)
     $info->{dwFontSize}{Y},                      # Font height
     $info->{FontFamily},                         # Font family flags
     $info->{FontWeight},                         # Font weight (e.g. 400, 700)
-    $wide,
+    bytes::substr($wide, 0, 2 * LF_FACESIZE),
   );
 
   # Call the Windows API SetCurrentConsoleFontEx to apply the font settings
@@ -3030,7 +2992,7 @@ sub SetConsoleScreenBufferSize {    # \%coord|undef ($handle, \%size)
         : 0
         ;
   return Win32::Console::_SetConsoleScreenBufferSize($handle, 
-    @{$size}{qw(X Y)}) || undef;
+    COORD::list($size)) || undef;
 }
 
 ###
@@ -3050,8 +3012,8 @@ sub SetConsoleTextAttribute {    # \%coord|undef ($handle, $attributes)
         : !_is_Int($attributes) ? ERROR_INVALID_PARAMETER
         : 0
         ;
-  return 
-    Win32::Console::_SetConsoleTextAttribute($handle, $attributes) || undef;
+  return Win32::Console::_SetConsoleTextAttribute($handle, 
+    $attributes) || undef;
 }
 
 ###
@@ -3075,17 +3037,10 @@ sub SetConsoleTitleA {    # $|undef ($title)
         : 0
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
-  if (Encode::is_utf8($title)) {
-    $title = do { local $_;
-      # Using the console actual code page
-      $_ = _MultiByteToWideChar($title, CP_UTF8);
-      $_ = _WideCharToMultiByte($_);
-      $_ ? $_ : $title;
-    }
-  }
+  $title = Encode::ANSI::encode($title);
   my $r = UNICODE
-        ? $SetConsoleTitleA->Call($title) 
-        : Win32::Console::_SetConsoleTitle($title);
+    ? $SetConsoleTitleA->Call($title) 
+    : Win32::Console::_SetConsoleTitle($title);
   return $r ? $r : undef;
 }
 
@@ -3097,11 +3052,7 @@ sub SetConsoleTitleW {    # $|undef ($title)
         : 0
         ;
   # Encode $title to WCHAR
-  my $wide = eval { local $_;
-    $_ = Encode::encode('UTF-16LE', $title);
-    Win32::SetLastError(0);
-    $_;
-  };
+  my $wide = _MultiByteToWideChar($title, CP_UTF8);
   return $SetConsoleTitleW->Call($wide) || undef;
 }
 
@@ -3123,7 +3074,7 @@ sub SetConsoleWindowInfo {    # \%coord|undef ($handle, $absolute, \%rect)
         : 0
         ;
   return Win32::Console::_SetConsoleWindowInfo($handle, $absolute ? 1 : 0, 
-    @{$rect}{qw(Left Top Right Bottom)}) || undef;
+    SMALL_RECT::list($rect)) || undef;
 }
 
 ###
@@ -3168,23 +3119,19 @@ sub WriteConsoleA {    # $|undef ($handle, $buffer, \$written)
         : !_is_Str($buffer)        ? ERROR_INVALID_PARAMETER
         : !_is_ScalarRef($written) ? ERROR_INVALID_PARAMETER
         : readonly($$written)      ? ERROR_INVALID_PARAMETER
-        : UNICODE                  ? ERROR_CALL_NOT_IMPLEMENTED
         : 0
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
-  if (Encode::is_utf8($buffer)) {
-    $buffer = do { local $_;
-      my $cpi = Win32::GetConsoleOutputCP();
-      if ($cpi != CP_UTF8) {
-        $_ = _MultiByteToWideChar($buffer, CP_UTF8);
-        $_ = _WideCharToMultiByte($_, $cpi);
-      }
-      $_ ? $_ : $buffer;
-    }
-  }
-  Win32::SetLastError(0);
-  $$written = Win32::Console::_WriteConsole($handle, $buffer);
-  return Win32::GetLastError() ? undef : 1;
+  $buffer = Encode::ANSI::encode($buffer, Win32::GetConsoleOutputCP());
+  my $r = UNICODE 
+    ? $WriteConsoleA->Call($handle, $buffer, length($buffer),
+        $$written = 0, undef)
+    : do {
+      Win32::SetLastError(0);
+      $$written = Win32::Console::_WriteConsole($handle, $buffer);
+      Win32::GetLastError() ? 0 : 1;
+    };
+  return $r ? $r : undef;
 }
 
 sub WriteConsoleW {    # $|undef ($handle, $buffer, \$written)
@@ -3198,11 +3145,7 @@ sub WriteConsoleW {    # $|undef ($handle, $buffer, \$written)
         : 0
         ;
   # Encode $buffer to WCHAR
-  my $wide = eval { local $_;
-    $_ = Encode::encode('UTF-16LE', $buffer);
-    Win32::SetLastError(0);
-    $_;
-  };
+  my $wide = _MultiByteToWideChar($buffer, CP_UTF8);
   return $WriteConsoleW->Call($handle, $wide, length($buffer), $$written = 0, 
     undef) || undef;
 }
@@ -3398,26 +3341,24 @@ sub WriteConsoleOutputA {    # $|undef ($handle, $buffer, \%size, \%coord, \%reg
         ;
   my ($r, @rect);
   if (UNICODE) {
-    my $dwBufferSize  = unpack('L', pack('SS', @{$size}{qw(X Y)}));
-    my $dwBufferCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
-    my $lpWriteRegion = pack('S4', @{$region}{qw(Left Top Right Bottom)});
-    $r = $WriteConsoleOutputA->Call($handle, $buffer, $dwBufferSize, 
-      $dwBufferCoord, $lpWriteRegion);
-    @rect = unpack('S4', $lpWriteRegion);
+    my $rect = SMALL_RECT::pack($region);
+    $r = $WriteConsoleOutputA->Call($handle, $buffer, COORD::pack($size), 
+      COORD::pack($coord), $rect);
+    @rect = SMALL_RECT::unpack($rect);
   }
   else {
     @rect = Win32::Console::_WriteConsoleOutput($handle, $buffer, 
-      @{$size}{qw(X Y)}, @{$coord}{qw(X Y)}, 
-      @{$region}{qw(Left Top Right Bottom)});
+      COORD::list($size), COORD::list($coord), SMALL_RECT::list($region));
     $r = @rect > 1 ? 1 : 0;
   }
+  return undef unless $r;
   %$region = (
     Left   => $rect[0],
     Top    => $rect[1],
     Right  => $rect[2],
     Bottom => $rect[3],
   );
-  return $r ? $r : undef;
+  return $r;
 }
 
 sub WriteConsoleOutputW {   # $|undef ($handle, $buffer, \%size, \%coord, \%region)
@@ -3432,12 +3373,10 @@ sub WriteConsoleOutputW {   # $|undef ($handle, $buffer, \%size, \%coord, \%regi
         : readonly(%$region)   ? ERROR_INVALID_PARAMETER
         : 0
         ;
-  my $dwBufferSize  = unpack('L', pack('SS', @{$size}{qw(X Y)}));
-  my $dwBufferCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
-  my $lpWriteRegion = pack('S4', @{$region}{qw(Left Top Right Bottom)});
-  my $r = $WriteConsoleOutputW->Call($handle, $buffer, $dwBufferSize, 
-    $dwBufferCoord, $lpWriteRegion);
-  my @rect = unpack('S4', $lpWriteRegion);
+  my $rect = SMALL_RECT::pack($region);
+  my $r = $WriteConsoleOutputW->Call($handle, $buffer, COORD::pack($size), 
+    COORD::pack($coord), $rect);
+  my @rect = SMALL_RECT::unpack($rect);
   %$region = (
     Left   => $rect[0],
     Top    => $rect[1],
@@ -3481,7 +3420,7 @@ sub WriteConsoleOutputAttribute {    # $|undef ($handle, $buffer, \%coord, \$wri
   Win32::SetLastError(0);
   # Unfortunately, the XS function only processes lower bytes and not words.
   $$written = Win32::Console::_WriteConsoleOutputAttribute($handle, 
-    pack('C*', unpack('S*', $buffer)), @{$coord}{qw(X Y)});
+    pack('C*', unpack('S*', $buffer)), COORD::list($coord));
   return Win32::GetLastError() ? undef : 1;
 }
 
@@ -3515,27 +3454,17 @@ sub WriteConsoleOutputCharacterA {    # $|undef ($handle, $buffer, \%coord, \$wr
         : 0
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
-  if (Encode::is_utf8($buffer)) {
-    $buffer = do { local $_;
-      my $cpi = Win32::GetConsoleOutputCP();
-      if ($cpi != CP_UTF8) {
-        $_ = _MultiByteToWideChar($buffer, CP_UTF8);
-        $_ = _WideCharToMultiByte($_, $cpi);
-      }
-      $_ ? $_ : $buffer;
-    }
-  }
-  if (UNICODE) {
-    my $dwWriteCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
-    return $WriteConsoleOutputCharacterA->Call($handle, $buffer, 
-      length($buffer), $dwWriteCoord, $$written = 0) || undef;
-  }
-  else {
-    Win32::SetLastError(0);
-    $$written = Win32::Console::_WriteConsoleOutputCharacter($handle, 
-      $buffer, @{$coord}{qw(X Y)});
-    return Win32::GetLastError() ? undef : 1;
-  }
+  $buffer = Encode::ANSI::encode($buffer, Win32::GetConsoleOutputCP());
+  my $r = UNICODE 
+    ? $WriteConsoleOutputCharacterA->Call($handle, $buffer, length($buffer), 
+        COORD::pack($coord), $$written = 0)
+    : do {
+      Win32::SetLastError(0);
+      $$written = Win32::Console::_WriteConsoleOutputCharacter($handle, 
+        $buffer, COORD::list($coord));
+      Win32::GetLastError() ? 0 : 1;
+    };
+  return $r ? $r : undef;
 }
 
 sub WriteConsoleOutputCharacterW {    # $|undef ($handle, $buffer, \%coord, \$written)
@@ -3549,12 +3478,9 @@ sub WriteConsoleOutputCharacterW {    # $|undef ($handle, $buffer, \%coord, \$wr
         : readonly($$written)      ? ERROR_INVALID_PARAMETER
         : 0
         ;
-  my $dwWriteCoord = unpack('L', pack('SS', @{$coord}{qw(X Y)}));
-  my $wide = eval { local $_;
-    $_ = Encode::encode('UTF-16LE', $buffer);
-    Win32::SetLastError(0);
-    $_;
-  };
+  my $dwWriteCoord = COORD::pack($coord);
+  # Encode $buffer to WCHAR
+  my $wide = _MultiByteToWideChar($buffer, CP_UTF8);
   return $WriteConsoleOutputCharacterW->Call($handle, $wide, length($buffer),
     $dwWriteCoord, $$written = 0) || undef;
 }
@@ -3855,6 +3781,53 @@ sub COORD {    # $hashref|undef (|@|\%)
   return;
 }
 
+sub COORD::list ($) {    # @ (\%)
+  return @{$_[0]}{qw(X Y)};
+}
+
+sub COORD::pack ($) {    # $ (\%)
+  return unpack('L', pack('SS', @{$_[0]}{qw(X Y)}));
+}
+
+sub COORD::unpack ($) {    # @ ($)
+  return unpack('SS', pack('L', $_[0]));
+}
+
+# Use the default system code page if none is specified, and encode the 
+# character string only if the target C<$codepage> is not C<CP_UTF8>.
+#
+# First convert the UTF-8 string to a UTF-16LE wide string, then convert the 
+# UTF-16LE wide string to a multibyte string using the target C<$codepage> and 
+# return the encoded multibyte (ANSI) version.
+#
+# B<Note>: Only converts if C<$str> has UTF-8 characters, otherwise it is 
+# already ANSI compatible.
+sub Encode::ANSI::encode {    # $ansi ($str, |$codepage)
+  my ($str, $cpi) = @_;
+  $cpi ||= CP_ACP;
+  if ($cpi != CP_UTF8 && $str =~ /[\xC0-\xf7]/) {
+    my $wide = _MultiByteToWideChar($str, CP_UTF8);
+    my $ansi = _WideCharToMultiByte($wide, $cpi);
+    return $ansi if defined $ansi;
+  }
+  return $str;
+}
+
+# Decode the ANSI string into a Perl string using the system code page or 
+# C<$codepage>, if specified. 
+#
+# B<Note>: If the code page is CP_UFT8, no conversion takes place.
+sub Encode::ANSI::decode {    # $str ($ansi, |$codepage)
+  my ($ansi, $cpi) = @_;
+  $cpi ||= CP_ACP;
+  if ($cpi != CP_UTF8 || $ansi =~ /[^\x00-\x7f]/) {
+    my $wide = _MultiByteToWideChar($ansi, $cpi);
+    my $str = _WideCharToMultiByte($wide, CP_UTF8);
+    return $str if defined $str;
+  }
+  return $ansi;
+}
+
 my $SMALL_RECT; BEGIN { $SMALL_RECT = { 
   Left => 0, Top => 0, Right => 0, Bottom => 0 }
 }
@@ -3891,6 +3864,18 @@ sub SMALL_RECT {    # $hashref|undef (|@|\%)
       Bottom => shift,
     } if grep(_is_Int($_) => @_) == 4;
   return;
+}
+
+sub SMALL_RECT::list ($) {    # @ (\%)
+  return @{$_[0]}{qw(Left Top Right Bottom)};
+}
+
+sub SMALL_RECT::pack ($) {    # $ (\%)
+  return pack('S4', @{$_[0]}{qw(Left Top Right Bottom)});
+}
+
+sub SMALL_RECT::unpack ($) {    # @ ($)
+  return unpack('S4', $_[0]);
 }
 
 #--------------------
@@ -4147,8 +4132,10 @@ sub _utf8_off ($) {
   # Fallback if the internal routine is no longer available
   *_utf8_off = Encode->can('_utf8_off') || sub {
     my $is_utf8 = Encode::is_utf8($_[0]);
-    $_[0] = bytes::substr($_[0], 0) if $is_utf8;
-    $^E = 0;
+    if ($is_utf8) {
+      $_[0] = Encode::encode('UTF-8', $_[0]);
+      $^E = 0;
+    }
     return $is_utf8;
   };
   goto &_utf8_off;
@@ -4161,8 +4148,8 @@ sub _MultiByteToWideChar {    # $wstr|undef ($str, |$cp)
   return undef unless defined $str;
   $cp = CP_ACP unless defined $cp;
   my $len = bytes::length($str) || return '';
-  _utf8_off($str) if Encode::is_utf8($str);
-  Win32::SetLastError(0);
+  _utf8_off($str);
+  Win32::SetLastError(0);    # Encode may set $^E
   my $wlen = $MultiByteToWideChar->Call($cp, 0, $str, $len, undef, 0) 
     || return undef;
   my $wide = "\0" x (2 * $wlen);
@@ -4193,8 +4180,8 @@ sub _WideCharToMultiByte {    # $str|undef ($wstr, |$cp)
       $str, $len, undef, undef);
   }
   substr($str, $len) = '';
-  _utf8_on($str) if $cp == CP_UTF8;
-  Win32::SetLastError(0);
+  _utf8_on($str);
+  Win32::SetLastError(0);    # Encode may set $^E
   return $str;
 }
 

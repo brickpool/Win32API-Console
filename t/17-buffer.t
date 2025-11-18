@@ -13,7 +13,6 @@ BEGIN {
     SetConsoleScreenBufferSize
     ScrollConsoleScreenBufferA
     ScrollConsoleScreenBufferW
-    INVALID_HANDLE_VALUE
   );
 }
 

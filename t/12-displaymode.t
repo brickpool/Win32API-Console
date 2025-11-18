@@ -12,7 +12,6 @@ BEGIN {
     GetConsoleScreenBufferInfo
     GetLargestConsoleWindowSize
     SetConsoleDisplayMode
-    INVALID_HANDLE_VALUE
     :DISPLAY_MODE_
   );
 }

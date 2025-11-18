@@ -10,7 +10,6 @@ BEGIN {
   use_ok 'Win32API::Console', qw(
     GetConsoleCursorInfo
     SetConsoleCursorInfo
-    INVALID_HANDLE_VALUE
   );
 }
 

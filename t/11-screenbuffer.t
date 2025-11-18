@@ -14,7 +14,6 @@ BEGIN {
     GetConsoleScreenBufferInfo
     SetConsoleTextAttribute
     SetConsoleWindowInfo
-    INVALID_HANDLE_VALUE
     :FOREGROUND_
   );
 }

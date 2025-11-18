@@ -11,7 +11,6 @@ BEGIN {
     GetLargestConsoleWindowSize
     GetConsoleMode
     SetConsoleMode
-    INVALID_HANDLE_VALUE
   );
 }
 

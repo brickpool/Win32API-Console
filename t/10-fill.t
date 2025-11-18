@@ -12,7 +12,6 @@ BEGIN {
   use_ok 'Win32API::Console', qw(
     FillConsoleOutputCharacterW
     FillConsoleOutputCharacterA
-    INVALID_HANDLE_VALUE
   );
 }
 
