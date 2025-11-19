@@ -396,7 +396,7 @@ BEGIN {
   $WriteConsoleOutputCharacterA = Win32::API::More->new('kernel32',
     'BOOL WriteConsoleOutputCharacterA(
       HANDLE  hConsoleOutput,
-      LPCSTR  lpCharacter,
+      LPVOID  lpCharacter,
       DWORD   nLength,
       DWORD   dwWriteCoord,
       LPDWORD lpNumberOfCharsWritten
@@ -3493,9 +3493,11 @@ sub WriteConsoleOutputCharacterA {    # $|undef ($handle, $buffer, \%coord, \$wr
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
   $buffer = Encode::ANSI::encode($buffer, Win32::GetConsoleOutputCP());
-  my $r = UNICODE 
-    ? $WriteConsoleOutputCharacterA->Call($handle, $buffer, length($buffer), 
-        COORD::pack($coord), $$written = 0)
+  use Devel::Peek;
+  Dump $buffer;
+  my $r = UNICODE
+    ? $WriteConsoleOutputCharacterA->Call($handle, $buffer, 
+        bytes::length($buffer), COORD::pack($coord), $$written = 0)
     : do {
       Win32::SetLastError(0);
       $$written = Win32::Console::_WriteConsoleOutputCharacter($handle, 
