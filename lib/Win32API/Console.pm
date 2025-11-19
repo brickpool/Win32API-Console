@@ -20,7 +20,7 @@ use version;
 
 # version '...'
 our $version = '0.10';
-our $VERSION = 'v0.1.4';
+our $VERSION = 'v0.1.5';
 $VERSION = eval $VERSION;
 
 # authority '...'
@@ -1121,7 +1121,7 @@ sub FillConsoleOutputCharacterA {    # $|undef ($handle, $char, $length, \%coord
   $char = Encode::ANSI::encode(substr($char, 0, 1), 
     Win32::GetConsoleOutputCP());
   my $r = UNICODE
-    ? $FillConsoleOutputCharacterA->Call($handle, ord($char), $length, 
+    ? $FillConsoleOutputCharacterA->Call($handle, $char, $length, 
         COORD::pack($coord), $$written = 0)
     : do {
       Win32::SetLastError(0);
@@ -1349,7 +1349,7 @@ sub GetConsoleFontSize {    # \%coord|undef ($handle, $index)
   my ($width, $height) = COORD::unpack($dwFontSize);
 
   if (EMULATE_FONT_SIZE and !$width || !$height) {
-    my $err = Win32::GetLastError();
+    my $err = Win32::GetLastError();    # Encode may set $^E
     TRY: eval {
       require Win32::GuiTest;
       my $hwnd = _GetConsoleHwnd();
@@ -1437,7 +1437,12 @@ sub GetConsoleOriginalTitleW {    # $num|undef ($handle, $index)
   my $r = $GetConsoleOriginalTitleW->Call($$buffer, $size) || return undef;
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  $$buffer = _WideCharToMultiByte(bytes::substr($$buffer, 0, 2 * $r), CP_UTF8);
+  $$buffer = do { local $_;
+    my $err = Win32::GetLastError();    # Encode may set $^E
+    $_ = Encode::decode('UTF-16LE', bytes::substr($$buffer, 0, 2 * $r));
+    Win32::SetLastError($err);
+    $_;
+  };
   return length($$buffer);
 }
 
@@ -1608,7 +1613,12 @@ sub GetConsoleTitleW {    # $num|undef (\$buffer, $size)
   my $r = $GetConsoleTitleW->Call($$buffer, $size) || return undef;
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  $$buffer = _WideCharToMultiByte(bytes::substr($$buffer, 0, 2 * $r), CP_UTF8);
+  $$buffer = do { local $_;
+    my $err = Win32::GetLastError();    # Encode may set $^E
+    $_ = Encode::decode('UTF-16LE', bytes::substr($$buffer, 0, 2 * $r));
+    Win32::SetLastError($err);
+    $_;
+  };
   return length($$buffer);
 }
 
@@ -1741,11 +1751,13 @@ sub GetCurrentConsoleFontEx {    # $|undef ($handle, $max, \%info)
   # Extract and decode the FaceName field (WCHAR[LF_FACESIZE], 64 bytes)
   # at the end of the structure, interpreting it as UTF-16LE. 
   my $name = do { local $_;
+    my $err = Win32::GetLastError();    # Encode may set $^E
     $_ = bytes::substr($lpFontInfoEx, 
       CONSOLE_FONT_INFOEX_SIZE - (2 * LF_FACESIZE), (2 * LF_FACESIZE)) 
         if defined $lpFontInfoEx;
     $_ = unpack('A*', $_) if defined;
-    $_ = _WideCharToMultiByte($_, CP_UTF8);
+    $_ = Encode::decode('UTF-16LE', $_) if defined;
+    Win32::SetLastError($err);
     $_;
   };
 
@@ -2585,8 +2597,12 @@ sub ReadConsoleOutputCharacterW {    # $|undef ($handle, \$buffer, $length, \%co
     COORD::pack($coord), $$read = 0) || undef;
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  $$buffer = _WideCharToMultiByte(bytes::substr($$buffer, 0, 2 * $$read), 
-    CP_UTF8);
+  $$buffer = do { local $_;
+    my $err = Win32::GetLastError();    # Encode may set $^E
+    $_ = Encode::decode('UTF-16LE', bytes::substr($$buffer, 0, 2 * $$read));
+    Win32::SetLastError($err);
+    $_;
+  };
   return defined $$buffer ? $r : undef;
 }
 
@@ -2621,20 +2637,27 @@ sub ScrollConsoleScreenBufferA {    # $|undef ($handle, \%scrollRect, \%clipRect
         : 0
         ;
   # Unpack CHAR_INFO structure: character (2 bytes) and attribute (2 bytes)
-  my ($char, $attr) = unpack('WS', pack('L', $fill));
+  my ($codepoint, $attr) = unpack('SS', pack('L', $fill));
 
   # If the Win32::Console XS function is not an ANSI function, simply convert 
-  # the Perl string to WCHAR; otherwise, convert the Perl string to ANSI. 
-  $char = UNICODE 
-    ? _MultiByteToWideChar($char, CP_UTF8)
-    : Encode::ANSI::encode($char, Win32::GetConsoleOutputCP());
+  # the Codepoint to WCHAR; otherwise, encode the Codepoint to ANSI format. 
+  $codepoint = ord(
+    UNICODE
+      ? do { local $_;
+          my $err = Win32::GetLastError();    # Encode may set $^E
+          $_ = Encode::encode('UTF-16LE', chr($codepoint));
+          Win32::SetLastError($err);
+          $_;
+        }
+      : Encode::ANSI::encode(chr($codepoint), Win32::GetConsoleOutputCP())
+  );
 
   # Calls the internal Win32::Console XS function, which uses a different order
   return Win32::Console::_ScrollConsoleScreenBuffer(
     $handle,                                    # console output handle
     SMALL_RECT::list($scrollRect),              # source rectangle to scroll
     COORD::list($destCoord),                    # destination coordinate
-    $char, $attr,                               # fill character and attribute
+    $codepoint, $attr,                          # fill codepoint and attribute
     $clipRect                                   # optional clipping rectangle
       ? SMALL_RECT::list($clipRect)
       : SMALL_RECT::list($scrollRect)
@@ -2900,7 +2923,12 @@ sub SetCurrentConsoleFontEx {    # $|undef ($handle, $max, \%info)
   }
 
   # Encode FaceName to WCHAR
-  my $wide = _MultiByteToWideChar($info->{FaceName}, CP_UTF8);
+  my $wide = do { local $_;
+    my $err = Win32::GetLastError();    # Encode may set $^E
+    $_ = Encode::encode('UTF-16LE', $info->{FaceName});
+    Win32::SetLastError($err);
+    $_;
+  };
 
   # Pack the CONSOLE_FONT_INFOEX structure with all required fields:
   # cbSize (DWORD), nFont (DWORD), dwFontSize.X (SHORT), dwFontSize.Y (SHORT),
@@ -3052,7 +3080,12 @@ sub SetConsoleTitleW {    # $|undef ($title)
         : 0
         ;
   # Encode $title to WCHAR
-  my $wide = _MultiByteToWideChar($title, CP_UTF8);
+  my $wide = do { local $_;
+    my $err = Win32::GetLastError();    # Encode may set $^E
+    $_ = Encode::encode('UTF-16LE', $title);
+    Win32::SetLastError($err);
+    $_;
+  };
   return $SetConsoleTitleW->Call($wide) || undef;
 }
 
@@ -3145,7 +3178,12 @@ sub WriteConsoleW {    # $|undef ($handle, $buffer, \$written)
         : 0
         ;
   # Encode $buffer to WCHAR
-  my $wide = _MultiByteToWideChar($buffer, CP_UTF8);
+  my $wide = do { local $_;
+    my $err = Win32::GetLastError();    # Encode may set $^E
+    $_ = Encode::encode('UTF-16LE', $buffer);
+    Win32::SetLastError($err);
+    $_;
+  };
   return $WriteConsoleW->Call($handle, $wide, length($buffer), $$written = 0, 
     undef) || undef;
 }
@@ -3480,7 +3518,12 @@ sub WriteConsoleOutputCharacterW {    # $|undef ($handle, $buffer, \%coord, \$wr
         ;
   my $dwWriteCoord = COORD::pack($coord);
   # Encode $buffer to WCHAR
-  my $wide = _MultiByteToWideChar($buffer, CP_UTF8);
+  my $wide = do { local $_;
+    my $err = Win32::GetLastError();    # Encode may set $^E
+    $_ = Encode::encode('UTF-16LE', $buffer);
+    Win32::SetLastError($err);
+    $_;
+  };
   return $WriteConsoleOutputCharacterW->Call($handle, $wide, length($buffer),
     $dwWriteCoord, $$written = 0) || undef;
 }
@@ -3806,7 +3849,9 @@ sub Encode::ANSI::encode {    # $ansi ($str, |$codepage)
   my ($str, $cpi) = @_;
   $cpi ||= CP_ACP;
   if ($cpi != CP_UTF8 && $str =~ /[\xC0-\xf7]/) {
-    my $wide = _MultiByteToWideChar($str, CP_UTF8);
+    my $err = Win32::GetLastError();    # Encode may set $^E
+    my $wide = Encode::encode('UTF-16LE', $str);
+    Win32::SetLastError($err);
     my $ansi = _WideCharToMultiByte($wide, $cpi);
     return $ansi if defined $ansi;
   }
@@ -3816,14 +3861,18 @@ sub Encode::ANSI::encode {    # $ansi ($str, |$codepage)
 # Decode the ANSI string into a Perl string using the system code page or 
 # C<$codepage>, if specified. 
 #
-# B<Note>: If the code page is CP_UFT8, no conversion takes place.
+# B<Note>: If the code page is CP_UTF8, no conversion takes place.
 sub Encode::ANSI::decode {    # $str ($ansi, |$codepage)
   my ($ansi, $cpi) = @_;
   $cpi ||= CP_ACP;
-  if ($cpi != CP_UTF8 || $ansi =~ /[^\x00-\x7f]/) {
+  if ($cpi != CP_UTF8 && $ansi =~ /[^\x00-\x7f]/) {
     my $wide = _MultiByteToWideChar($ansi, $cpi);
-    my $str = _WideCharToMultiByte($wide, CP_UTF8);
-    return $str if defined $str;
+    if (defined $wide) {
+      my $err = Win32::GetLastError();    # Encode may set $^E
+      my $str = Encode::decode('UTF-16LE', $wide);
+      Win32::SetLastError($err);
+      return $str;
+    }
   }
   return $ansi;
 }
@@ -4117,10 +4166,7 @@ sub _utf8_on ($) {
   # Fallback if the internal routine is no longer available
   *_utf8_on = Encode->can('_utf8_on') || sub {
     my $is_utf8 = Encode::is_utf8($_[0]);
-    unless ($is_utf8) {
-      $_[0] = Encode::decode('UTF-8', $_[0]);
-      $^E = 0;
-    }
+    $_[0] = Encode::decode('UTF-8', $_[0]) unless $is_utf8;
     return $is_utf8;
   };
   goto &_utf8_on;
@@ -4132,10 +4178,7 @@ sub _utf8_off ($) {
   # Fallback if the internal routine is no longer available
   *_utf8_off = Encode->can('_utf8_off') || sub {
     my $is_utf8 = Encode::is_utf8($_[0]);
-    if ($is_utf8) {
-      $_[0] = Encode::encode('UTF-8', $_[0]);
-      $^E = 0;
-    }
+    $_[0] = Encode::encode('UTF-8', $_[0]) if $is_utf8;
     return $is_utf8;
   };
   goto &_utf8_off;
@@ -4149,7 +4192,7 @@ sub _MultiByteToWideChar {    # $wstr|undef ($str, |$cp)
   $cp = CP_ACP unless defined $cp;
   my $len = bytes::length($str) || return '';
   _utf8_off($str);
-  Win32::SetLastError(0);    # Encode may set $^E
+  Win32::SetLastError(0);
   my $wlen = $MultiByteToWideChar->Call($cp, 0, $str, $len, undef, 0) 
     || return undef;
   my $wide = "\0" x (2 * $wlen);
@@ -4180,8 +4223,8 @@ sub _WideCharToMultiByte {    # $str|undef ($wstr, |$cp)
       $str, $len, undef, undef);
   }
   substr($str, $len) = '';
-  _utf8_on($str);
-  Win32::SetLastError(0);    # Encode may set $^E
+  _utf8_on($str) if $cp == CP_UTF8;
+  Win32::SetLastError(0);
   return $str;
 }
 

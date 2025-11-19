@@ -1,5 +1,11 @@
 Revision history for Win32API::Console
 
+0.1.5  2025-11-19
+    - Change regarding the use of Encode::Unicode
+    - Fix ScrollConsoleScreenBuffer; XS uses WCHAR
+    - Fix FillConsoleOutputCharacterA; uses CHAR
+    - Fix don't set UTF8-Flag on ANSI strings
+
 0.1.4  2025-11-18
     - Add "macros" (subs) to improve readability
     - Add ANSI functions if XS was compiled with Unicode
@@ -14,8 +20,7 @@ Revision history for Win32API::Console
 0.1.2  2025-11-16
     - Add a TestConsole Module for automated tests
     - Fixed no WC_NO_BEST_FIT_CHARS when CP_UTF8
-    - Change from Encode::encode('UTF-16', ..) to MultiByteToWideChar()
-    - Change from Encode::decode('UTF-16', ..) to WideCharToMultiByte()
+    - Change regarding the use of Encode::Unicode
     - Change emulation use for SetConsoleDisplayMode()
     - Change of osname detection for GetOSVersion()
     - Remove dependency on the Win32API::Registry module
