@@ -40,13 +40,11 @@ subtest 'WideCharToMultiByte and back' => sub {
 
   # Convert multibyte to wide string (UTF-8 codepage)
   my $wide = MultiByteToWideChar($original, CP_UTF8);
-  diag "$^E" if $^E;
   ok(defined $wide, 'MultiByteToWideChar returned a value');
   ok($wide, 'wide string is not empty');
 
   # Convert back to multibyte string
   my $mb = WideCharToMultiByte($wide, CP_UTF8);
-  diag "$^E" if $^E;
   ok(defined $mb, 'WideCharToMultiByte returned a value');
   ok($mb, 'Multibyte string is not empty');
   is(

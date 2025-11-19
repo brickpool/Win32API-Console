@@ -1,5 +1,9 @@
 Revision history for Win32API::Console
 
+0.1.6  2025-11-19
+    - Further adjustment to ANSI handling
+    - UTF-8 flag should be deleted for ANSI
+
 0.1.5  2025-11-19
     - Change regarding the use of Encode::Unicode
     - Fix ScrollConsoleScreenBuffer; XS uses WCHAR

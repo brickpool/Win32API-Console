@@ -20,7 +20,7 @@ use version;
 
 # version '...'
 our $version = '0.10';
-our $VERSION = 'v0.1.5';
+our $VERSION = 'v0.1.6';
 $VERSION = eval $VERSION;
 
 # authority '...'
@@ -396,7 +396,7 @@ BEGIN {
   $WriteConsoleOutputCharacterA = Win32::API::More->new('kernel32',
     'BOOL WriteConsoleOutputCharacterA(
       HANDLE  hConsoleOutput,
-      LPVOID  lpCharacter,
+      LPCSTR  lpCharacter,
       DWORD   nLength,
       DWORD   dwWriteCoord,
       LPDWORD lpNumberOfCharsWritten
@@ -3493,11 +3493,9 @@ sub WriteConsoleOutputCharacterA {    # $|undef ($handle, $buffer, \%coord, \$wr
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
   $buffer = Encode::ANSI::encode($buffer, Win32::GetConsoleOutputCP());
-  use Devel::Peek;
-  Dump $buffer;
   my $r = UNICODE
-    ? $WriteConsoleOutputCharacterA->Call($handle, $buffer, 
-        bytes::length($buffer), COORD::pack($coord), $$written = 0)
+    ? $WriteConsoleOutputCharacterA->Call($handle, $buffer, length($buffer), 
+        COORD::pack($coord), $$written = 0)
     : do {
       Win32::SetLastError(0);
       $$written = Win32::Console::_WriteConsoleOutputCharacter($handle, 
@@ -3846,16 +3844,20 @@ sub COORD::unpack ($) {    # @ ($)
 # return the encoded multibyte (ANSI) version.
 #
 # B<Note>: Only converts if C<$str> has UTF-8 characters, otherwise it is 
-# already ANSI compatible.
+# already ANSI compatible. The returned string does not have the UTF8 flag set.
 sub Encode::ANSI::encode {    # $ansi ($str, |$codepage)
   my ($str, $cpi) = @_;
   $cpi ||= CP_ACP;
-  if ($cpi != CP_UTF8 && $str =~ /[\xC0-\xf7]/) {
-    my $err = Win32::GetLastError();    # Encode may set $^E
-    my $wide = Encode::encode('UTF-16LE', $str);
-    Win32::SetLastError($err);
-    my $ansi = _WideCharToMultiByte($wide, $cpi);
-    return $ansi if defined $ansi;
+  if ($str =~ /[\xC0-\xf7]/) {
+    if ($cpi != CP_UTF8) {
+      my $err = Win32::GetLastError();    # Encode may set $^E
+      my $wide = Encode::encode('UTF-16LE', $str);
+      Win32::SetLastError($err);
+      my $ansi = _WideCharToMultiByte($wide, $cpi);
+      return $ansi if defined $ansi;
+    }
+    _utf8_off($str);
+    Win32::SetLastError(0);
   }
   return $str;
 }
@@ -3863,18 +3865,23 @@ sub Encode::ANSI::encode {    # $ansi ($str, |$codepage)
 # Decode the ANSI string into a Perl string using the system code page or 
 # C<$codepage>, if specified. 
 #
-# B<Note>: If the code page is CP_UTF8, no conversion takes place.
+# B<Note>: If the code page is CP_UTF8, no conversion takes place, but the UTF8 
+# flag may be set.
 sub Encode::ANSI::decode {    # $str ($ansi, |$codepage)
   my ($ansi, $cpi) = @_;
   $cpi ||= CP_ACP;
-  if ($cpi != CP_UTF8 && $ansi =~ /[^\x00-\x7f]/) {
-    my $wide = _MultiByteToWideChar($ansi, $cpi);
-    if (defined $wide) {
-      my $err = Win32::GetLastError();    # Encode may set $^E
-      my $str = Encode::decode('UTF-16LE', $wide);
-      Win32::SetLastError($err);
-      return $str;
+  if ($ansi =~ /[^\x00-\x7f]/) {
+    if ($cpi != CP_UTF8) {
+      my $wide = _MultiByteToWideChar($ansi, $cpi);
+      if (defined $wide) {
+        my $err = Win32::GetLastError();    # Encode may set $^E
+        my $str = Encode::decode('UTF-16LE', $wide);
+        Win32::SetLastError($err);
+        return $str;
+      }
     }
+    _utf8_on($ansi);
+    Win32::SetLastError(0);
   }
   return $ansi;
 }
@@ -4191,14 +4198,14 @@ sub _utf8_off ($) {
 sub _MultiByteToWideChar {    # $wstr|undef ($str, |$cp)
   my ($str, $cp) = @_;
   return undef unless defined $str;
+  return '' unless $str;
   $cp = CP_ACP unless defined $cp;
-  my $len = bytes::length($str) || return '';
-  _utf8_off($str);
-  Win32::SetLastError(0);
-  my $wlen = $MultiByteToWideChar->Call($cp, 0, $str, $len, undef, 0) 
+  my $raw = bytes::substr($str, 0);
+  my $len = bytes::length($raw);
+  my $wlen = $MultiByteToWideChar->Call($cp, 0, $raw, $len, undef, 0) 
     || return undef;
   my $wide = "\0" x (2 * $wlen);
-  my $r = $MultiByteToWideChar->Call($cp, 0, $str, $len, $wide, $wlen) 
+  my $r = $MultiByteToWideChar->Call($cp, 0, $raw, $len, $wide, $wlen) 
     || return undef;
   return $wide;
 }
@@ -4225,8 +4232,6 @@ sub _WideCharToMultiByte {    # $str|undef ($wstr, |$cp)
       $str, $len, undef, undef);
   }
   substr($str, $len) = '';
-  _utf8_on($str) if $cp == CP_UTF8;
-  Win32::SetLastError(0);
   return $str;
 }
 
