@@ -18,6 +18,7 @@
 
 # Editor/IDE
 ^.*\.code-workspace$
+^\.gitattributes$
 ^\.gitignore$
 ^\.vscode/
 ^\.idea/
