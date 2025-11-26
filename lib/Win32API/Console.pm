@@ -20,7 +20,7 @@ use version;
 
 # version '...'
 our $version = '0.10';
-our $VERSION = 'v0.2.1';
+our $VERSION = 'v0.2.2';
 $VERSION = eval $VERSION;
 
 # authority '...'
@@ -294,11 +294,11 @@ BEGIN {
 
   $ScrollConsoleScreenBufferW = Win32::API::More->new('kernel32',
     'BOOL ScrollConsoleScreenBufferW(
-      HANDLE  hConsoleOutput,
-      LPVOID  lpScrollRectangle,
-      LPVOID  lpClipRectangle,
-      DWORD   dwDestinationOrigin,
-      LPDWORD lpFill
+      HANDLE hConsoleOutput,
+      LPVOID lpScrollRectangle,
+      LPVOID lpClipRectangle,
+      DWORD  dwDestinationOrigin,
+      LPVOID lpFill
     )'
   ) or die "Import ScrollConsoleScreenBufferW failed: $^E";
 
@@ -546,6 +546,7 @@ our %EXPORT_TAGS = (
   )],
 
   Struct => [qw(
+    CHAR_INFO
     CONSOLE_CURSOR_INFO
     CONSOLE_FONT_INFO
     CONSOLE_FONT_INFOEX
@@ -571,6 +572,16 @@ our %EXPORT_TAGS = (
     ALLOC_CONSOLE_RESULT_EXISTING_CONSOLE
   )],
 
+  FILE_SHARE_ => [qw(
+    FILE_SHARE_READ
+    FILE_SHARE_WRITE
+  )],
+
+  GENERIC_ => [qw(
+    GENERIC_READ
+    GENERIC_WRITE
+  )],
+
   CTRL_EVENT_ => [qw(
     CTRL_BREAK_EVENT
     CTRL_C_EVENT
@@ -589,6 +600,14 @@ our %EXPORT_TAGS = (
     DOUBLE_CLICK
     MOUSE_WHEELED
     MOUSE_HWHEELED
+  )],
+
+  BUTTON_PRESSED_ => [qw(
+    FROM_LEFT_1ST_BUTTON_PRESSED
+    FROM_LEFT_2ND_BUTTON_PRESSED
+    FROM_LEFT_3RD_BUTTON_PRESSED
+    FROM_LEFT_4TH_BUTTON_PRESSED
+    RIGHTMOST_BUTTON_PRESSED
   )],
 
   CONTROL_KEY_STATE_ => [qw(
@@ -749,6 +768,14 @@ use constant {
 };
 
 use constant {
+  FROM_LEFT_1ST_BUTTON_PRESSED => 0x0001,
+  FROM_LEFT_2ND_BUTTON_PRESSED => 0x0004,
+  FROM_LEFT_3RD_BUTTON_PRESSED => 0x0008,
+  FROM_LEFT_4TH_BUTTON_PRESSED => 0x0010,
+  RIGHTMOST_BUTTON_PRESSED     => 0x0002,
+};
+
+use constant {
   RIGHT_ALT_PRESSED  => Win32::Console::constant("RIGHT_ALT_PRESSED",  0),
   LEFT_ALT_PRESSED   => Win32::Console::constant("LEFT_ALT_PRESSED",   0),
   RIGHT_CTRL_PRESSED => Win32::Console::constant("RIGHT_CTRL_PRESSED", 0),
@@ -820,8 +847,14 @@ use constant {
 };
 
 # CreateConsoleScreenBuffer
-use constant CONSOLE_TEXTMODE_BUFFER 
-  => Win32::Console::constant("CONSOLE_TEXTMODE_BUFFER", 0);
+use constant {
+  CONSOLE_TEXTMODE_BUFFER 
+                    => Win32::Console::constant("CONSOLE_TEXTMODE_BUFFER", 0),
+  GENERIC_READ      => Win32API::File::GENERIC_READ,
+  GENERIC_WRITE     => Win32API::File::GENERIC_WRITE,
+  FILE_SHARE_READ   => Win32API::File::FILE_SHARE_READ,
+  FILE_SHARE_WRITE  => Win32API::File::FILE_SHARE_WRITE,
+};
 
 # GenerateConsoleCtrlEvent/SetConsoleCtrlHandler
 use constant {
@@ -1884,7 +1917,7 @@ sub GetNumberOfConsoleInputEvents {    # $|undef ($handle, \$count)
 # I<GetStdHandle> retrieves a handle to the standard input, output, or error 
 # device.
 #
-#  - C<$id>: identifier (e.g. C<STD_INPUT_HANDLE>, see L</":STD_HANDLE_">)
+#  - C<$id>: identifier (e.g. C<STD_INPUT_HANDLE>, see L</:STD_HANDLE_>)
 #
 #  Returns: handle on success, INVALID_HANDLE_VALUE on failure.
 #  Use GetLastError() to retrieve extended error information.
@@ -1896,9 +1929,7 @@ sub GetStdHandle {    # $handle ($id)
         : !_is_Int($id) ? ERROR_INVALID_PARAMETER
         : 0
         ;
-  Win32::SetLastError(0);
-  my $handle = Win32::Console::_GetStdHandle($id);
-  return Win32::GetLastError() ? INVALID_HANDLE_VALUE : $handle;
+  return Win32::Console::_GetStdHandle($id);
 }
 
 ###
@@ -2667,16 +2698,16 @@ sub ReadConsoleOutputCharacterW {    # $|undef ($handle, \$buffer, $length, \%co
 #  - C<\%scrollRect>: L</SMALL_RECT> structure defining the region to scroll
 #  - C<\%clipRect>:   Optional clipping rectangle (L</SMALL_RECT> or C<undef>)
 #  - C<\%destCoord>:  Destination coordinate (L</COORD> struct)
-#  - C<$fill>:        Packed string of I<CHAR_INFO> used to fill emptied space
+#  - C<\%fill>:       L</CHAR_INFO> structure used to fill emptied space
 #
 #  Returns: non-zero on success, undef on failure.
 #
-sub ScrollConsoleScreenBuffer {    # $|undef ($handle, \%scrollRect, \%clipRect|undef, \%destCoord, $fill)
+sub ScrollConsoleScreenBuffer {    # $|undef ($handle, \%scrollRect, \%clipRect|undef, \%destCoord, \%fill)
   $Caller = join(':' => caller);
   UNICODE ? goto &ScrollConsoleScreenBufferW : goto &ScrollConsoleScreenBufferA;
 }
 
-sub ScrollConsoleScreenBufferA {    # $|undef ($handle, \%scrollRect, \%clipRect|undef, \%destCoord, $fill)
+sub ScrollConsoleScreenBufferA {    # $|undef ($handle, \%scrollRect, \%clipRect|undef, \%destCoord, \%fill)
   my ($handle, $scrollRect, $clipRect, $destCoord, $fill) = @_;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 5                                     ? ERROR_BAD_ARGUMENTS
@@ -2684,11 +2715,11 @@ sub ScrollConsoleScreenBufferA {    # $|undef ($handle, \%scrollRect, \%clipRect
         : !SMALL_RECT($scrollRect)                    ? ERROR_INVALID_PARAMETER
         : defined $clipRect && !SMALL_RECT($clipRect) ? ERROR_INVALID_PARAMETER
         : !COORD($destCoord)                          ? ERROR_INVALID_PARAMETER
-        : !_is_Str($fill)                             ? ERROR_INVALID_PARAMETER
+        : !CHAR_INFO($fill)                           ? ERROR_INVALID_PARAMETER
         : 0
         ;
   # Unpack CHAR_INFO structure: character (2 bytes) and attribute (2 bytes)
-  my ($codepoint, $attr) = unpack('SS', pack('L', $fill));
+  my ($codepoint, $attr) = CHAR_INFO::list($fill);
 
   # If the Win32::Console XS function is not an ANSI function, simply use 
   # the Codepoint as WCHAR; otherwise, encode the Codepoint to ANSI format. 
@@ -2711,7 +2742,7 @@ sub ScrollConsoleScreenBufferA {    # $|undef ($handle, \%scrollRect, \%clipRect
   ) || undef;
 }
 
-sub ScrollConsoleScreenBufferW {    # $|undef ($handle, \%scrollRect, \%clipRect|undef, \%destCoord, $fill)
+sub ScrollConsoleScreenBufferW {    # $|undef ($handle, \%scrollRect, \%clipRect|undef, \%destCoord, \%fill)
   my ($handle, $scrollRect, $clipRect, $destCoord, $fill) = @_;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 5                                     ? ERROR_BAD_ARGUMENTS
@@ -2719,7 +2750,7 @@ sub ScrollConsoleScreenBufferW {    # $|undef ($handle, \%scrollRect, \%clipRect
         : !SMALL_RECT($scrollRect)                    ? ERROR_INVALID_PARAMETER
         : defined $clipRect && !SMALL_RECT($clipRect) ? ERROR_INVALID_PARAMETER
         : !COORD($destCoord)                          ? ERROR_INVALID_PARAMETER
-        : !_is_Str($fill)                             ? ERROR_INVALID_PARAMETER
+        : !CHAR_INFO($fill)                           ? ERROR_INVALID_PARAMETER
         : 0
         ;
 
@@ -2731,7 +2762,7 @@ sub ScrollConsoleScreenBufferW {    # $|undef ($handle, \%scrollRect, \%clipRect
       ? SMALL_RECT::pack($clipRect) 
       : undef,                  
     COORD::pack($destCoord),                    # destination coordinate
-    $fill                                       # CHAR_INFO struct for fill
+    CHAR_INFO::pack($fill)                      # CHAR_INFO struct for fill
   ) || undef;
 }
 
@@ -2806,14 +2837,14 @@ sub SetConsoleCtrlHandler {    # $|undef (\&handler|undef, $add)
       my $sigint = $SIG{INT};
       $SIG{INT}  = sub {
         my $r = $handler->(CTRL_C_EVENT);
-        $sigint->() if $r && ref $sigint eq 'CODE';
+        $sigint->() if !$r && ref $sigint eq 'CODE';
       };
       push @sigint => $sigint;
 
       my $sigbreak = $SIG{BREAK};
       $SIG{BREAK}  = sub {
         my $r = $handler->(CTRL_BREAK_EVENT);
-        $sigbreak->() if $r && ref $sigbreak eq 'CODE';
+        $sigbreak->() if !$r && ref $sigbreak eq 'CODE';
       };
       push @sigbreak => $sigbreak;
     }
@@ -3100,9 +3131,10 @@ sub SetConsoleTitleW {    # $|undef ($title)
 sub SetConsoleWindowInfo {    # \%coord|undef ($handle, $absolute, \%rect)
   my ($handle, $absolute, $rect) = @_;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
-    $^E = @_ != 3            ? ERROR_BAD_ARGUMENTS
-        : !_is_Int($handle)  ? ERROR_INVALID_HANDLE
-        : !SMALL_RECT($rect) ? ERROR_INVALID_PARAMETER
+    $^E = @_ != 3              ? ERROR_BAD_ARGUMENTS
+        : !_is_Int($handle)    ? ERROR_INVALID_HANDLE
+        : !_is_Bool($absolute) ? ERROR_INVALID_HANDLE
+        : !SMALL_RECT($rect)   ? ERROR_INVALID_PARAMETER
         : 0
         ;
   return Win32::Console::_SetConsoleWindowInfo($handle, $absolute ? 1 : 0, 
@@ -3654,6 +3686,45 @@ RETURN:
 #--------------------
 # Helper Subroutines
 #--------------------
+
+my $CHAR_INFO; BEGIN { $CHAR_INFO = { Char => 0, Attributes => 0 } }
+
+# Usage:
+#
+#  my \%hashref = CHAR_INFO();
+#  my \%hashref = CHAR_INFO($char, $attributes) // die;
+#  my \%hashref = CHAR_INFO({
+#    Char       => $char, 
+#    Attributes => $attributes,
+#  }) // die;
+sub CHAR_INFO { # $hashref|undef (|@|\%)
+  return lock_ref_keys { %$CHAR_INFO } 
+      if @_ == 0
+      ;
+  return lock_ref_keys { %{$_[0]} }
+      if @_ == 1 
+      && _is_HashRef($_[0])
+      && keys(%{$_[0]}) == keys(%$CHAR_INFO)
+      && grep(_is_Int($_[0]->{$_}) => keys(%$CHAR_INFO)) == 2
+      ;
+  return lock_ref_keys { 
+      Char       => shift, 
+      Attributes => shift,
+    } if grep(_is_Int($_) => @_) == 2;
+  return;
+}
+
+sub CHAR_INFO::list ($) {    # @ (\%)
+  return @{$_[0]}{qw(Char Attributes)};
+}
+
+sub CHAR_INFO::pack ($) {    # $ (\%)
+  return pack('SS', @{$_[0]}{qw(Char Attributes)});
+}
+
+sub CHAR_INFO::unpack ($) {    # @ ($)
+  return unpack('SS', $_[0]);
+}
 
 my $CONSOLE_CURSOR_INFO = { dwSize => 0, bVisible => 0 };
 

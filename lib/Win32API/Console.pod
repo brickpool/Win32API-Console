@@ -47,7 +47,8 @@ This variant expects wide strings encoded as C<UTF-16LE>.
 Example:
 
   # Text must be a sequence of bytes encoded as UTF-16LE
-  FunctionNameW("T\0e\0x\0t\0");
+  use Encode;
+  FunctionNameW( Encode::encode('UTF-16LE' => "Text") );
 
 The parameter is passed as a C<WCHAR> string.
 
@@ -1044,7 +1045,7 @@ C<\$read>:   Reference to number of attributes read
 
 =head2 ScrollConsoleScreenBuffer
 
- my $scalar | undef = ScrollConsoleScreenBuffer($handle, \%scrollRect, \%clipRect | undef, \%destCoord, $fill);
+ my $scalar | undef = ScrollConsoleScreenBuffer($handle, \%scrollRect, \%clipRect | undef, \%destCoord, \%fill);
 
 
 C<ScrollConsoleScreenBuffer> scrolls a region of the console screen buffer.
@@ -1068,7 +1069,7 @@ C<\%destCoord>:  Destination coordinate (L</COORD> struct)
 
 
 =item *
-C<$fill>:        Packed string of I<CHAR_INFO> used to fill emptied space
+C<\%fill>:       L</CHAR_INFO> structure used to fill emptied space
 
 =back
 
@@ -1078,11 +1079,11 @@ C<$fill>:        Packed string of I<CHAR_INFO> used to fill emptied space
 
 =head2 ScrollConsoleScreenBufferA
 
- my $scalar | undef = ScrollConsoleScreenBufferA($handle, \%scrollRect, \%clipRect | undef, \%destCoord, $fill);
+ my $scalar | undef = ScrollConsoleScreenBufferA($handle, \%scrollRect, \%clipRect | undef, \%destCoord, \%fill);
 
 =head2 ScrollConsoleScreenBufferW
 
- my $scalar | undef = ScrollConsoleScreenBufferW($handle, \%scrollRect, \%clipRect | undef, \%destCoord, $fill);
+ my $scalar | undef = ScrollConsoleScreenBufferW($handle, \%scrollRect, \%clipRect | undef, \%destCoord, \%fill);
 
 =head2 SetConsoleActiveScreenBuffer
 
@@ -1623,6 +1624,19 @@ C<\$written>: Reference to number of attributes written
 
 =head1 STRUCTURES
 
+=head2 CHAR_INFO
+
+ my $hashref | undef = CHAR_INFO( | @array | \%hashref);
+
+Usage:
+
+ my \%hashref = CHAR_INFO();
+ my \%hashref = CHAR_INFO($char, $attributes) // die;
+ my \%hashref = CHAR_INFO({
+   Char       => $char,
+   Attributes => $attributes,
+ }) // die;
+
 =head2 CONSOLE_CURSOR_INFO
 
  my $hashref | undef = CONSOLE_CURSOR_INFO( | @array | \%hashref);
@@ -1800,6 +1814,7 @@ is TRUE.
 
 The following structures (L</STRUCTURES>) are used to access a console.
 
+  CHAR_INFO
   CONSOLE_CURSOR_INFO
   CONSOLE_FONT_INFO
   CONSOLE_FONT_INFOEX
@@ -1830,6 +1845,17 @@ L</WriteConsoleOutputAttribute> and L</FillConsoleOutputAttribute>.
   BACKGROUND_GREEN
   BACKGROUND_RED
   BACKGROUND_INTENSITY
+
+=head2 :BUTTON_PRESSED_
+
+Constants for L</PeekConsoleInput>, L</ReadConsoleInput> and 
+L</WriteConsoleInput>.
+
+  FROM_LEFT_1ST_BUTTON_PRESSED
+  FROM_LEFT_2ND_BUTTON_PRESSED
+  FROM_LEFT_3RD_BUTTON_PRESSED
+  FROM_LEFT_4TH_BUTTON_PRESSED
+  RIGHTMOST_BUTTON_PRESSED
 
 =head2 :COMMON_LVB_
 
@@ -1887,6 +1913,13 @@ L</WriteConsoleInput>.
   MENU_EVENT
   FOCUS_EVENT
 
+=head2 :FILE_SHARE_
+
+Constants for L</CreateConsoleScreenBuffer>.
+
+  FILE_SHARE_READ
+  FILE_SHARE_WRITE
+
 =head2 :FOREGROUND_
 
 Constants for L</GetConsoleScreenBufferInfo>, L</SetConsoleTextAttribute>, 
@@ -1897,6 +1930,13 @@ L</WriteConsoleOutputAttribute> and L</FillConsoleOutputAttribute>.
   FOREGROUND_GREEN
   FOREGROUND_RED
   FOREGROUND_INTENSITY
+
+=head2 :GENERIC_
+
+Constants for L</CreateConsoleScreenBuffer>.
+
+  GENERIC_READ
+  GENERIC_WRITE
 
 =head2 :INPUT_MODE_
 
