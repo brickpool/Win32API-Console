@@ -16,6 +16,8 @@ use Win32API::Console qw(
 
 sub L ($) { Encode::encode('UTF-16LE', $_[0]) }
 
+END { warn "$^E\n" if $^E }
+
 sub main {
   my $hStdOut;
 

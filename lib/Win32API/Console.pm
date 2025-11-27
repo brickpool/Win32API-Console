@@ -20,7 +20,7 @@ use version;
 
 # version '...'
 our $version = '0.10';
-our $VERSION = 'v0.2.2';
+our $VERSION = 'v0.2.3';
 $VERSION = eval $VERSION;
 
 # authority '...'
@@ -1154,13 +1154,14 @@ sub FillConsoleOutputCharacterA {    # $|undef ($handle, $char, $length, \%coord
         : readonly($$written)      ? ERROR_INVALID_PARAMETER
         : 0
         ;
-  if ($Caller ne join(':' => caller)) {
-    $Caller = '';
+  if ($Caller) {
     $char = Encode::ANSI::encode(substr($char, 0, 1), 
-      Win32::GetConsoleOutputCP());
+      Win32::GetConsoleOutputCP()) if $Caller ne join(':' => caller);
+    $Caller = '';
   }
   my $r;
   if (UNICODE) {
+    _utf8_off($char);
     $r = $FillConsoleOutputCharacterA->Call($handle, $char, $length, 
       COORD::pack($coord), $$written = 0) || return undef;
   }
@@ -1460,10 +1461,12 @@ sub GetConsoleOriginalTitleA {    # $num|undef ($handle, $index)
   substr($$buffer, $r) = '';
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) {
+    if ($Caller ne join(':' => caller)) {
+      $$buffer = Encode::ANSI::decode($$buffer, CP_ACP);
+      $r = length($$buffer);
+    }
     $Caller = '';
-    $$buffer = Encode::ANSI::decode($$buffer, CP_ACP);
-    $r = length($$buffer);
   }
   return $r;
 }
@@ -1482,15 +1485,17 @@ sub GetConsoleOriginalTitleW {    # $num|undef ($handle, $index)
   $$buffer = bytes::substr($$buffer, 0, 2 * $r);
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) {
+    if ($Caller ne join(':' => caller)) {
+      $$buffer = do { local $_;
+        my $err = Win32::GetLastError();    # Encode may set $^E
+        $_ = Encode::decode('UTF-16LE', $$buffer);
+        Win32::SetLastError($err);
+        $_;
+      };
+      $r = length($$buffer);
+    }
     $Caller = '';
-    $$buffer = do { local $_;
-      my $err = Win32::GetLastError();    # Encode may set $^E
-      $_ = Encode::decode('UTF-16LE', $$buffer);
-      Win32::SetLastError($err);
-      $_;
-    };
-    $r = length($$buffer);
   }
   return $r;
 }
@@ -1650,10 +1655,12 @@ sub GetConsoleTitleA {    # $num|undef (\$buffer, $size)
   }
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) {
+    if ($Caller ne join(':' => caller)) {
+      $$buffer = Encode::ANSI::decode(substr($$buffer, 0, $size), CP_ACP);
+      $r = length($$buffer);
+    }
     $Caller = '';
-    $$buffer = Encode::ANSI::decode(substr($$buffer, 0, $size), CP_ACP);
-    $r = length($$buffer);
   }
   return $r;
 }
@@ -1675,12 +1682,14 @@ sub GetConsoleTitleW {    # $num|undef (\$buffer, $size)
   Win32::SetLastError($err);
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) {
+    if ($Caller ne join(':' => caller)) {
+      my $err = Win32::GetLastError();    # Encode may set $^E
+      $$buffer = Encode::decode('UTF-16LE', $$buffer);
+      Win32::SetLastError($err);
+      $r = length($$buffer);
+    }
     $Caller = '';
-    my $err = Win32::GetLastError();    # Encode may set $^E
-    $$buffer = Encode::decode('UTF-16LE', $$buffer);
-    Win32::SetLastError($err);
-    $r = length($$buffer);
   }
   return $r;
 }
@@ -2171,10 +2180,12 @@ sub ReadConsoleA {    # $|undef ($handle, \$buffer, $length, \$read, |undef)
   }
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) { 
+    if ($Caller ne join(':' => caller)) {
+      $$buffer = Encode::ANSI::decode($$buffer, Win32::GetConsoleCP());
+      $$read = length($$buffer);
+    }
     $Caller = '';
-    $$buffer = Encode::ANSI::decode($$buffer, Win32::GetConsoleCP());
-    $$read = length($$buffer);
   }
   return $r;
 }
@@ -2208,12 +2219,14 @@ sub ReadConsoleW {    # $|undef ($handle, \$buffer, $length, \$read, |\%control|
   $$buffer = bytes::substr($$buffer, 0, 2 * $$read);
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) {
+    if ($Caller ne join(':' => caller)) {
+      my $err = Win32::GetLastError();    # Encode may set $^E
+      $$buffer = Encode::decode('UTF-16LE', $$buffer);
+      Win32::SetLastError($err);
+      $$read = length($$buffer);
+    }
     $Caller = '';
-    my $err = Win32::GetLastError();    # Encode may set $^E
-    $$buffer = Encode::decode('UTF-16LE', $$buffer);
-    Win32::SetLastError($err);
-    $$read = length($$buffer);
   }
   return $r;
 }
@@ -2651,10 +2664,12 @@ sub ReadConsoleOutputCharacterA {    # $|undef ($handle, \$buffer, $length, \%co
   }
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) {
+    if ($Caller ne join(':' => caller)) {
+      $$buffer = Encode::ANSI::decode($$buffer, Win32::GetConsoleOutputCP());
+      $$read = length($$buffer);
+    }
     $Caller = '';
-    $$buffer = Encode::ANSI::decode($$buffer, Win32::GetConsoleOutputCP());
-    $$read = length($$buffer);
   }
   return $r;
 }
@@ -2681,12 +2696,14 @@ sub ReadConsoleOutputCharacterW {    # $|undef ($handle, \$buffer, $length, \%co
   $$buffer = bytes::substr($$buffer, 0, 2 * $$read);
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) { 
+    if ($Caller ne join(':' => caller)) {
+      my $err = Win32::GetLastError();    # Encode may set $^E
+      $$buffer = Encode::decode('UTF-16LE', $$buffer);
+      Win32::SetLastError($err);
+      $$read = length($$buffer);
+    }
     $Caller = '';
-    my $err = Win32::GetLastError();    # Encode may set $^E
-    $$buffer = Encode::decode('UTF-16LE', $$buffer);
-    Win32::SetLastError($err);
-    $$read = length($$buffer);
   }
   return $r;
 }
@@ -2723,11 +2740,13 @@ sub ScrollConsoleScreenBufferA {    # $|undef ($handle, \%scrollRect, \%clipRect
 
   # If the Win32::Console XS function is not an ANSI function, simply use 
   # the Codepoint as WCHAR; otherwise, encode the Codepoint to ANSI format. 
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) { 
+    if ($Caller ne join(':' => caller)) {
+      $codepoint = ord
+        Encode::ANSI::encode(chr($codepoint), Win32::GetConsoleOutputCP())
+          unless UNICODE;
+    }
     $Caller = '';
-    $codepoint = ord
-      Encode::ANSI::encode(chr($codepoint), Win32::GetConsoleOutputCP())
-        unless UNICODE;
   }
 
   # Calls the internal Win32::Console XS function, which uses a different order
@@ -3090,9 +3109,9 @@ sub SetConsoleTitleA {    # $|undef ($title)
         : 0
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) {
+    $title = Encode::ANSI::encode($title) if $Caller ne join(':' => caller);
     $Caller = '';
-    $title = Encode::ANSI::encode($title);
   }
   if (UNICODE) {
     return $SetConsoleTitleA->Call($title) || undef
@@ -3110,12 +3129,14 @@ sub SetConsoleTitleW {    # $|undef ($title)
         : 0
         ;
   # Encode $title to WCHAR
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) { 
+    if ($Caller ne join(':' => caller)) {
+      my $err = Win32::GetLastError();    # Encode may set $^E
+      $title = Encode::encode('UTF-16LE', $title);
+      Win32::SetLastError($err);
+    }
     $Caller = '';
-    my $err = Win32::GetLastError();    # Encode may set $^E
-    $title = Encode::encode('UTF-16LE', $title);
-    Win32::SetLastError($err);
-  };
+  }
   return $SetConsoleTitleW->Call($title) || undef;
 }
 
@@ -3237,9 +3258,10 @@ sub WriteConsoleA {    # $|undef ($handle, $buffer, \$written)
         : 0
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) {
+    $buffer = Encode::ANSI::encode($buffer, Win32::GetConsoleOutputCP()) 
+      if $Caller ne join(':' => caller);
     $Caller = '';
-    $buffer = Encode::ANSI::encode($buffer, Win32::GetConsoleOutputCP());
   }
 
   if (UNICODE) {
@@ -3264,11 +3286,13 @@ sub WriteConsoleW {    # $|undef ($handle, $buffer, \$written)
         : 0
         ;
   # Encode $buffer to WCHAR
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) { 
+    if ($Caller ne join(':' => caller)) {
+      my $err = Win32::GetLastError();    # Encode may set $^E
+      $buffer = Encode::encode('UTF-16LE', $buffer);
+      Win32::SetLastError($err);
+    }
     $Caller = '';
-    my $err = Win32::GetLastError();    # Encode may set $^E
-    $buffer = Encode::encode('UTF-16LE', $buffer);
-    Win32::SetLastError($err);
   }
   my $length = bytes::length($buffer) >> 1;
   return $WriteConsoleW->Call($handle, $buffer, $length, $$written = 0, undef) 
@@ -3574,13 +3598,15 @@ sub WriteConsoleOutputCharacterA {    # $|undef ($handle, $buffer, \%coord, \$wr
         : 0
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) {
+    $buffer = Encode::ANSI::encode($buffer, Win32::GetConsoleOutputCP())
+      if $Caller ne join(':' => caller);
     $Caller = '';
-    $buffer = Encode::ANSI::encode($buffer, Win32::GetConsoleOutputCP());
   }
 
   my $r;
   if (UNICODE) {
+    _utf8_off($buffer);
     $r = $WriteConsoleOutputCharacterA->Call($handle, $buffer, length($buffer), 
       COORD::pack($coord), $$written = 0) || return undef;
   }
@@ -3606,11 +3632,13 @@ sub WriteConsoleOutputCharacterW {    # $|undef ($handle, $buffer, \%coord, \$wr
         : 0
         ;
   # Encode $buffer to WCHAR
-  if ($Caller ne join(':' => caller)) {
+  if ($Caller) { 
+    if ($Caller ne join(':' => caller)) {
+      my $err = Win32::GetLastError();    # Encode may set $^E
+      $buffer = Encode::encode('UTF-16LE', $buffer);
+      Win32::SetLastError($err);
+    }
     $Caller = '';
-    my $err = Win32::GetLastError();    # Encode may set $^E
-    $buffer = Encode::encode('UTF-16LE', $buffer);
-    Win32::SetLastError($err);
   }
   my $length = bytes::length($buffer) >> 1;
   return $WriteConsoleOutputCharacterW->Call($handle, $buffer, $length,

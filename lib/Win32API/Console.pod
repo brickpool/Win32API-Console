@@ -27,7 +27,7 @@ character encoding they expect. The naming convention typically uses suffixes:
 
 =item * C<FunctionNameA>
 
-This variant expects C<ANSI> strings encoded in the console's current local 
+This variant expects I<ANSI> strings encoded in the console's current local 
 code page.
 
 Example:
@@ -35,9 +35,9 @@ Example:
   # Text must be an ANSI string encoded in the local code page
   FunctionNameA("Text");
 
-The parameter is passed as a C<ANSI> string.
+The parameter is passed as a I<ANSI> string.
 
-B<Note>: C<A>-Version uses C<ANSI> and is not recommended for international 
+B<Note>: I<A>-Version uses I<ANSI> and is not recommended for international 
 applications.
 
 =item * C<FunctionNameW>
@@ -50,22 +50,22 @@ Example:
   use Encode;
   FunctionNameW( Encode::encode('UTF-16LE' => "Text") );
 
-The parameter is passed as a C<WCHAR> string.
+The parameter is passed as a I<WCHAR> string.
 
-B<Note>: C<W>-Version uses C<UTF-16LE> and is the quasi standard for Windows 
+B<Note>: I<W>-Version uses C<UTF-16LE> and is the quasi standard for Windows 
 applications.
 
 =item * C<FunctionName>
 
 This wrapper decides internally based on the compiler setting and automatically 
-encodes/decodes the Perl string (UTF-8) to/from C<ANSI> or C<UTF-16LE> using 
-L<Encode> in a call to the C<A> or C<W> variant.
+encodes/decodes the Perl string (UTF-8) to/from I<ANSI> or I<WCHAR> using 
+L<Encode> in a call to the I<A> or I<W> variant.
 
 =over 4
 
-=item * If C<UNICODE> is enabled, the C<W> version is used.
+=item * If C<UNICODE> is enabled, the I<W> version is used.
 
-=item * If C<UNICODE> is disabled, the C<A> version is used.
+=item * If C<UNICODE> is disabled, the I<A> version is used.
 
 =back
 

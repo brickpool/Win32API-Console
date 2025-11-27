@@ -1,5 +1,10 @@
 Revision history for Win32API::Console
 
+0.2.3  2025-11-27
+    - Fix the switch of the wrapper functions
+    - Fixed related ANSI and WCHAR tests
+    - Fix buffer overflow in WriteConsoleOutputCharacterA
+
 0.2.2  2025-11-26
     - Add author only tests
     - Add samples to the distribution
