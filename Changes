@@ -1,5 +1,10 @@
 Revision history for Win32API::Console
 
+0.2.4  2025-12-01
+    - Change the scope for the OS version information, now local
+    - Fix coding switches, should also work in the event of a fault
+    - Fix ANSI string param of Win32::API imports: UTF8 flag must be off
+
 0.2.3  2025-11-27
     - Fix the switch of the wrapper functions
     - Fixed related ANSI and WCHAR tests

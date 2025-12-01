@@ -20,7 +20,7 @@ use version;
 
 # version '...'
 our $version = '0.10';
-our $VERSION = 'v0.2.3';
+our $VERSION = 'v0.2.4';
 $VERSION = eval $VERSION;
 
 # authority '...'
@@ -879,7 +879,7 @@ use constant {
 # Due to a bug, we can detect whether the XS code was compiled in UNICODE. 
 # This bug is confirmed to exist up to and including version 0.10.
 use constant UNICODE => do {
-  my $version = $Win32::Console::VERSION || 0;
+  my $version = $Win32::Console::VERSION // 0;
   if ($version > 0.10) {
     undef;
   }
@@ -939,6 +939,7 @@ sub CONSOLE_SCREEN_BUFFER_INFO;
 sub COORD;
 sub SMALL_RECT;
 
+sub __CALLER__;
 sub __FUNCTION__;
 sub _is_Bool;
 sub _is_HashRef;
@@ -951,9 +952,63 @@ sub _lock_ref_keys_recure;
 # Variables
 #----------
 
-our $ProductName;
-our @VersionInformation;
-our $Caller = '';
+# OS version information
+my $productName;
+my @versionInformation;
+
+# Flag for encoding/decoding, used for the wrapper
+my $coding = 0;
+
+# Signal stack
+my (@sigint, @sigbreak);
+
+# Predefined structures
+my $COORD = {
+  X => 0,
+  Y => 0,
+};
+my $SMALL_RECT = {
+  Left   => 0, 
+  Top    => 0, 
+  Right  => 0, 
+  Bottom => 0,
+};
+my $CHAR_INFO = { 
+  Char       => 0, 
+  Attributes => 0,
+};
+my $CONSOLE_CURSOR_INFO = {
+  dwSize   => 0,
+  bVisible => 0,
+};
+my $CONSOLE_FONT_INFO = {
+  nFont      => 0,
+  dwFontSize => COORD(),
+};
+my $CONSOLE_FONT_INFOEX = {
+  cbSize     => 0,
+  nFont      => 0,
+  dwFontSize => COORD(),
+  FontFamily => 0,
+  FontWeight => 0,
+  FaceName   => "\0",
+};
+my $CONSOLE_READCONSOLE_CONTROL = { 
+  nLength           => 0,
+  nInitialChars     => 0,
+  dwCtrlWakeupMask  => 0,
+  dwControlKeyState => 0,
+};
+my $CONSOLE_SCREEN_BUFFER_INFO = {
+  dwSize              => COORD(),
+  dwCursorPosition    => COORD(),
+  wAttributes         => 0,
+  srWindow            => SMALL_RECT(),
+  dwMaximumWindowSize => COORD(),
+};
+
+# Caching so that the search routine does not have to be performed all the time
+my %hwndFound = (0 => 0);
 
 #-------------------
 # Public Subroutines
@@ -1010,9 +1065,8 @@ sub AllocConsoleWithOptions {    # $|undef ($mode, $show|undef, \$result)
     Win32::SetLastError(ERROR_PROC_NOT_FOUND);
     return undef;
   }
-  my $use = 0;
-  if   ( defined $show ) { $use  = 1 }
-  else                   { $show = 0 }
+  my $use = defined $show ? 1 : 0;
+  $show //= 0;
   my $options = pack('LLL', $mode, $use, $show & 0xffff);
   my $r = $AllocConsoleWithOptions->Call($options, $$result = 0);
   my $err = ERROR_GEN_FAILURE;
@@ -1136,7 +1190,7 @@ sub FillConsoleOutputAttribute {    # $|undef ($handle, $attr, $length, \%coord,
 #  Returns: non-zero on success, undef on failure.
 #
 sub FillConsoleOutputCharacter {    # $|undef ($handle, $char, $length, \%coord, \$written)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE
     ? goto &FillConsoleOutputCharacterW
     : goto &FillConsoleOutputCharacterA;
@@ -1144,6 +1198,7 @@ sub FillConsoleOutputCharacter {    # $|undef ($handle, $char, $length, \%coord,
 
 sub FillConsoleOutputCharacterA {    # $|undef ($handle, $char, $length, \%coord, \$written)
   my ($handle, $char, $length, $coord, $written) = @_;
+  my $encode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 5                  ? ERROR_BAD_ARGUMENTS
         : !_is_Int($handle)        ? ERROR_INVALID_HANDLE
@@ -1154,21 +1209,19 @@ sub FillConsoleOutputCharacterA {    # $|undef ($handle, $char, $length, \%coord
         : readonly($$written)      ? ERROR_INVALID_PARAMETER
         : 0
         ;
-  if ($Caller) {
+  if ($encode) {
     $char = Encode::ANSI::encode(substr($char, 0, 1), 
-      Win32::GetConsoleOutputCP()) if $Caller ne join(':' => caller);
-    $Caller = '';
+      Win32::GetConsoleOutputCP());
   }
   my $r;
   if (UNICODE) {
-    _utf8_off($char);
     $r = $FillConsoleOutputCharacterA->Call($handle, $char, $length, 
       COORD::pack($coord), $$written = 0) || return undef;
   }
   else {
     Win32::SetLastError(0);
     $$written = Win32::Console::_FillConsoleOutputCharacter($handle, $char, 
-      $length, COORD::list($coord)) || 0;
+      $length, COORD::list($coord)) // 0;
     return undef if Win32::GetLastError();
     $r = 1;
   };
@@ -1393,7 +1446,7 @@ sub GetConsoleFontSize {    # \%coord|undef ($handle, $index)
   my ($width, $height) = COORD::unpack($dwFontSize);
 
   if (EMULATE_FONT_SIZE and !$width || !$height) {
-    my $err = Win32::GetLastError();    # Encode may set $^E
+    local $^E;    # Encode may set $^E
     TRY: eval {
       require Win32::GuiTest;
       my $hwnd = _GetConsoleHwnd();
@@ -1425,9 +1478,6 @@ sub GetConsoleFontSize {    # \%coord|undef ($handle, $index)
       $height = int($cy / $rows);
       # warn "$width, $height";
     };
-    CATCH: if ($@) {
-      Win32::SetLastError($err);
-    }
   }
 
   return COORD($width, $height);
@@ -1443,12 +1493,13 @@ sub GetConsoleFontSize {    # \%coord|undef ($handle, $index)
 #  Use GetLastError() to retrieve extended error information.
 #
 sub GetConsoleOriginalTitle {    # $num|undef (\$buffer, $size)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE ? goto &GetConsoleOriginalTitleW : goto &GetConsoleOriginalTitleA;
 }
 
 sub GetConsoleOriginalTitleA {    # $num|undef ($handle, $index)
   my ($buffer, $size) = @_;
+  my $decode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 2                 ? ERROR_BAD_ARGUMENTS
         : !_is_ScalarRef($buffer) ? ERROR_INVALID_PARAMETER
@@ -1461,18 +1512,16 @@ sub GetConsoleOriginalTitleA {    # $num|undef ($handle, $index)
   substr($$buffer, $r) = '';
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  if ($Caller) {
-    if ($Caller ne join(':' => caller)) {
-      $$buffer = Encode::ANSI::decode($$buffer, CP_ACP);
-      $r = length($$buffer);
-    }
-    $Caller = '';
+  if ($decode) {
+    $$buffer = Encode::ANSI::decode($$buffer, CP_ACP);
+    $r = length($$buffer);
   }
   return $r;
 }
 
 sub GetConsoleOriginalTitleW {    # $num|undef ($handle, $index)
   my ($buffer, $size) = @_;
+  my $decode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 2                 ? ERROR_BAD_ARGUMENTS
         : !_is_ScalarRef($buffer) ? ERROR_INVALID_PARAMETER
@@ -1485,17 +1534,12 @@ sub GetConsoleOriginalTitleW {    # $num|undef ($handle, $index)
   $$buffer = bytes::substr($$buffer, 0, 2 * $r);
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  if ($Caller) {
-    if ($Caller ne join(':' => caller)) {
-      $$buffer = do { local $_;
-        my $err = Win32::GetLastError();    # Encode may set $^E
-        $_ = Encode::decode('UTF-16LE', $$buffer);
-        Win32::SetLastError($err);
-        $_;
-      };
-      $r = length($$buffer);
-    }
-    $Caller = '';
+  if ($decode) {
+    $$buffer = do {
+      local $^E;    # Encode may set $^E
+      Encode::decode('UTF-16LE', $$buffer);
+    };
+    $r = length($$buffer);
   }
   return $r;
 }
@@ -1601,7 +1645,7 @@ sub GetConsoleScreenBufferInfo {    # $|undef ($handle, \%info)
   };
   CATCH: if ($@) {
     $^E = ERROR_INVALID_PARAMETER;
-    return;
+    return undef;
   }
   return @info > 1 ? 1 : undef;
 }
@@ -1620,12 +1664,13 @@ sub GetConsoleScreenBufferInfo {    # $|undef ($handle, \%info)
 # underlying XS function of L<Win32::Console>.
 #
 sub GetConsoleTitle {    # $num|undef (\$buffer, $size)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE ? goto &GetConsoleTitleW : goto &GetConsoleTitleA;
 }
 
 sub GetConsoleTitleA {    # $num|undef (\$buffer, $size)
   my ($buffer, $size) = @_;
+  my $decode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 2                 ? ERROR_BAD_ARGUMENTS
         : !_is_ScalarRef($buffer) ? ERROR_INVALID_PARAMETER
@@ -1655,18 +1700,16 @@ sub GetConsoleTitleA {    # $num|undef (\$buffer, $size)
   }
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  if ($Caller) {
-    if ($Caller ne join(':' => caller)) {
-      $$buffer = Encode::ANSI::decode(substr($$buffer, 0, $size), CP_ACP);
-      $r = length($$buffer);
-    }
-    $Caller = '';
+  if ($decode) {
+    $$buffer = Encode::ANSI::decode(substr($$buffer, 0, $size), CP_ACP);
+    $r = length($$buffer);
   }
   return $r;
 }
 
 sub GetConsoleTitleW {    # $num|undef (\$buffer, $size)
   my ($buffer, $size) = @_;
+  my $decode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 2                 ? ERROR_BAD_ARGUMENTS
         : !_is_ScalarRef($buffer) ? ERROR_INVALID_PARAMETER
@@ -1677,19 +1720,16 @@ sub GetConsoleTitleW {    # $num|undef (\$buffer, $size)
   $size++;    # TODO: No idea why we have to add +1 here.
   $$buffer = "\0" x (2 * $size);
   my $r = $GetConsoleTitleW->Call($$buffer, $size) || return undef;
-  my $err = Win32::GetLastError();    # substr may set $^E
-  $$buffer = bytes::substr($$buffer, 0, 2 * $r);
-  Win32::SetLastError($err);
+  $$buffer = do {
+    local $^E;    # substr may set $^E
+    bytes::substr($$buffer, 0, 2 * $r);
+  };
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  if ($Caller) {
-    if ($Caller ne join(':' => caller)) {
-      my $err = Win32::GetLastError();    # Encode may set $^E
-      $$buffer = Encode::decode('UTF-16LE', $$buffer);
-      Win32::SetLastError($err);
-      $r = length($$buffer);
-    }
-    $Caller = '';
+  if ($decode) {
+    local $^E;    # Encode may set $^E
+    $$buffer = Encode::decode('UTF-16LE', $$buffer);
+    $r = length($$buffer);
   }
   return $r;
 }
@@ -1822,16 +1862,14 @@ sub GetCurrentConsoleFontEx {    # $|undef ($handle, $max, \%info)
 
   # Extract and decode the FaceName field (WCHAR[LF_FACESIZE], 64 bytes)
   # at the end of the structure, interpreting it as UTF-16LE. 
-  my $name = do { local $_;
-    my $err = Win32::GetLastError();    # Encode may set $^E
-    $_ = bytes::substr($lpFontInfoEx, 
-      CONSOLE_FONT_INFOEX_SIZE - (2 * LF_FACESIZE), (2 * LF_FACESIZE)) 
-        if defined $lpFontInfoEx;
-    $_ = unpack('A*', $_) if defined;
-    $_ = Encode::decode('UTF-16LE', $_) if defined;
-    Win32::SetLastError($err);
-    $_;
+  my $name;
+  if ($lpFontInfoEx) {
+    local $^E;    # Encode may set $^E
+    $name = bytes::substr($lpFontInfoEx, 
+      CONSOLE_FONT_INFOEX_SIZE - (2 * LF_FACESIZE), (2 * LF_FACESIZE));
+    $name = Encode::decode('UTF-16LE', unpack('A*', $name));
   };
+  $name //= '';
 
   # If the incorrect hash was passed (generated with one of our structures that 
   # have locked keys), the error should be detected.
@@ -1955,7 +1993,7 @@ sub GetStdHandle {    # $handle ($id)
 #  Returns: non-zero on success, undef on failure.
 #
 sub PeekConsoleInput {    # $|undef ($handle, \%buffer)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE ? goto &PeekConsoleInputW : goto &PeekConsoleInputA;
 }
 
@@ -1974,7 +2012,7 @@ sub PeekConsoleInputA {    # $|undef ($handle, \%buffer)
     unless $PeekConsoleInputA->Call($handle, $lpBuffer, 1, $read) && $read;
 
   my @ir   = unpack('S', $lpBuffer);
-  my $type = $ir[0] || 0;
+  my $type = $ir[0] // 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
       @ir = ( @ir, unpack('x4'.'LSSSCxL', $lpBuffer) );
@@ -2063,7 +2101,7 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
     unless $PeekConsoleInputW->Call($handle, $lpBuffer, 1, $read) && $read;
 
   my @ir   = unpack('S', $lpBuffer);
-  my $type = $ir[0] || 0;
+  my $type = $ir[0] // 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
       @ir = ( @ir, unpack('x4'.'LSSSSL', $lpBuffer) );
@@ -2149,12 +2187,13 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
 #  Returns: non-zero on success, undef on failure.
 #
 sub ReadConsole {    # $|undef ($handle, \$buffer, $length, \$read, |\%control|undef)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE ? goto &ReadConsoleW : goto &ReadConsoleA;
 }
 
 sub ReadConsoleA {    # $|undef ($handle, \$buffer, $length, \$read, |undef)
   my ($handle, $buffer, $length, $read) = @_;
+  my $decode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ >= 4 && @_ <= 5      ? ERROR_BAD_ARGUMENTS
         : !_is_Int($handle)       ? ERROR_INVALID_HANDLE
@@ -2174,24 +2213,22 @@ sub ReadConsoleA {    # $|undef ($handle, \$buffer, $length, \$read, |undef)
   }
   else {
     Win32::SetLastError(0);
-    $$read = Win32::Console::_ReadConsole($handle, $$buffer, $length) || 0;
+    $$read = Win32::Console::_ReadConsole($handle, $$buffer, $length) // 0;
     return undef if Win32::GetLastError();
     $r = 1;
   }
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  if ($Caller) { 
-    if ($Caller ne join(':' => caller)) {
-      $$buffer = Encode::ANSI::decode($$buffer, Win32::GetConsoleCP());
-      $$read = length($$buffer);
-    }
-    $Caller = '';
+  if ($decode) {
+    $$buffer = Encode::ANSI::decode($$buffer, Win32::GetConsoleCP());
+    $$read = length($$buffer);
   }
   return $r;
 }
 
 sub ReadConsoleW {    # $|undef ($handle, \$buffer, $length, \$read, |\%control|undef)
   my ($handle, $buffer, $length, $read, $control) = @_;
+  my $decode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ >= 4 && @_ <= 5      ? ERROR_BAD_ARGUMENTS
         : !_is_Int($handle)       ? ERROR_INVALID_HANDLE
@@ -2219,14 +2256,10 @@ sub ReadConsoleW {    # $|undef ($handle, \$buffer, $length, \$read, |\%control|
   $$buffer = bytes::substr($$buffer, 0, 2 * $$read);
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  if ($Caller) {
-    if ($Caller ne join(':' => caller)) {
-      my $err = Win32::GetLastError();    # Encode may set $^E
-      $$buffer = Encode::decode('UTF-16LE', $$buffer);
-      Win32::SetLastError($err);
-      $$read = length($$buffer);
-    }
-    $Caller = '';
+  if ($decode) {
+    local $^E;    # Encode may set $^E
+    $$buffer = Encode::decode('UTF-16LE', $$buffer);
+    $$read = length($$buffer);
   }
   return $r;
 }
@@ -2309,7 +2342,7 @@ sub ReadConsoleW {    # $|undef ($handle, \$buffer, $length, \$read, |\%control|
 #  Returns: non-zero on success, undef on failure.
 #
 sub ReadConsoleInput {    # $|undef ($handle, \%buffer)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE ? goto &ReadConsoleInputW : goto &ReadConsoleInputA;
 }
 
@@ -2328,7 +2361,7 @@ sub ReadConsoleInputA {    # $|undef ($handle, \%buffer)
     unless $ReadConsoleInputA->Call($handle, $lpBuffer, 1, $read) && $read;
 
   my @ir   = unpack('S', $lpBuffer);
-  my $type = $ir[0] || 0;
+  my $type = $ir[0] // 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
       @ir = ( @ir, unpack('x4'.'LSSSCxL', $lpBuffer) );
@@ -2417,7 +2450,7 @@ sub ReadConsoleInputW {    # $|undef ($handle, \%buffer)
     unless $ReadConsoleInputW->Call($handle, $lpBuffer, 1, $read) && $read;
 
   my @ir   = unpack('S', $lpBuffer);
-  my $type = $ir[0] || 0;
+  my $type = $ir[0] // 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
       @ir = ( @ir, unpack('x4'.'LSSSSL', $lpBuffer) );
@@ -2507,7 +2540,7 @@ sub ReadConsoleInputW {    # $|undef ($handle, \%buffer)
 # returns the rectangle actually used.
 #
 sub ReadConsoleOutput {    # $|undef ($handle, \$buffer, \%size, \%coord, \%region)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE ? goto &ReadConsoleOutputW : goto &ReadConsoleOutputA;
 }
 
@@ -2631,7 +2664,7 @@ sub ReadConsoleOutputAttribute {    # $|undef ($handle, \$buffer, $length, \%coo
 #  Returns: non-zero on success, undef on failure.
 #
 sub ReadConsoleOutputCharacter {    # $|undef ($handle, \$buffer, $length, \%coord, \$read)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE 
     ? goto &ReadConsoleOutputCharacterW 
     : goto &ReadConsoleOutputCharacterA;
@@ -2639,6 +2672,7 @@ sub ReadConsoleOutputCharacter {    # $|undef ($handle, \$buffer, $length, \%coo
 
 sub ReadConsoleOutputCharacterA {    # $|undef ($handle, \$buffer, $length, \%coord, \$read)
   my ($handle, $buffer, $length, $coord, $read) = @_;
+  my $decode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 5                 ? ERROR_BAD_ARGUMENTS
         : !_is_Int($handle)       ? ERROR_INVALID_HANDLE
@@ -2664,18 +2698,16 @@ sub ReadConsoleOutputCharacterA {    # $|undef ($handle, \$buffer, $length, \%co
   }
 
   # Convert the Windows ANSI string to a Perl string (UTF-8)
-  if ($Caller) {
-    if ($Caller ne join(':' => caller)) {
-      $$buffer = Encode::ANSI::decode($$buffer, Win32::GetConsoleOutputCP());
-      $$read = length($$buffer);
-    }
-    $Caller = '';
+  if ($decode) {
+    $$buffer = Encode::ANSI::decode($$buffer, Win32::GetConsoleOutputCP());
+    $$read = length($$buffer);
   }
   return $r;
 }
 
 sub ReadConsoleOutputCharacterW {    # $|undef ($handle, \$buffer, $length, \%coord, \$read)
   my ($handle, $buffer, $length, $coord, $read) = @_;
+  my $decode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 5                 ? ERROR_BAD_ARGUMENTS
         : !_is_Int($handle)       ? ERROR_INVALID_HANDLE
@@ -2696,14 +2728,10 @@ sub ReadConsoleOutputCharacterW {    # $|undef ($handle, \$buffer, $length, \%co
   $$buffer = bytes::substr($$buffer, 0, 2 * $$read);
 
   # Decode the UTF-16LE wide string into perl's internal string format (UTF-8)
-  if ($Caller) { 
-    if ($Caller ne join(':' => caller)) {
-      my $err = Win32::GetLastError();    # Encode may set $^E
-      $$buffer = Encode::decode('UTF-16LE', $$buffer);
-      Win32::SetLastError($err);
-      $$read = length($$buffer);
-    }
-    $Caller = '';
+  if ($decode) {
+    local $^E;    # Encode may set $^E
+    $$buffer = Encode::decode('UTF-16LE', $$buffer);
+    $$read = length($$buffer);
   }
   return $r;
 }
@@ -2720,12 +2748,13 @@ sub ReadConsoleOutputCharacterW {    # $|undef ($handle, \$buffer, $length, \%co
 #  Returns: non-zero on success, undef on failure.
 #
 sub ScrollConsoleScreenBuffer {    # $|undef ($handle, \%scrollRect, \%clipRect|undef, \%destCoord, \%fill)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE ? goto &ScrollConsoleScreenBufferW : goto &ScrollConsoleScreenBufferA;
 }
 
 sub ScrollConsoleScreenBufferA {    # $|undef ($handle, \%scrollRect, \%clipRect|undef, \%destCoord, \%fill)
   my ($handle, $scrollRect, $clipRect, $destCoord, $fill) = @_;
+  my $encode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 5                                     ? ERROR_BAD_ARGUMENTS
         : !_is_Int($handle)                           ? ERROR_INVALID_HANDLE
@@ -2740,13 +2769,10 @@ sub ScrollConsoleScreenBufferA {    # $|undef ($handle, \%scrollRect, \%clipRect
 
   # If the Win32::Console XS function is not an ANSI function, simply use 
   # the Codepoint as WCHAR; otherwise, encode the Codepoint to ANSI format. 
-  if ($Caller) { 
-    if ($Caller ne join(':' => caller)) {
-      $codepoint = ord
-        Encode::ANSI::encode(chr($codepoint), Win32::GetConsoleOutputCP())
-          unless UNICODE;
-    }
-    $Caller = '';
+  if ($encode) {
+    $codepoint = ord
+      Encode::ANSI::encode(chr($codepoint), Win32::GetConsoleOutputCP())
+        unless UNICODE;
   }
 
   # Calls the internal Win32::Console XS function, which uses a different order
@@ -2819,8 +2845,6 @@ sub SetConsoleCP {    # $|undef ($codepage)
         ;
   return Win32::SetConsoleCP($codepage) || undef;
 }
-
-my (@sigint, @sigbreak);
 
 ###
 # C<SetConsoleCtrlHandler> adds or removes an user-defined I<handler> for 
@@ -3005,8 +3029,8 @@ sub SetConsoleDisplayMode {    # $|undef ($handle, $flags, \%coord)
 sub SetConsoleIcon {    # $|undef ($iconFile)
   my ($iconFile) = @_;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
-    $^E = @_ != 1                             ? ERROR_BAD_ARGUMENTS
-        : !defined $iconFile || ref $iconFile ? ERROR_INVALID_PARAMETER
+    $^E = @_ != 1             ? ERROR_BAD_ARGUMENTS
+        : !_is_Str($iconFile) ? ERROR_INVALID_PARAMETER
         : 0
         ;
   return Win32::Console::_SetConsoleIcon($iconFile) || undef;
@@ -3097,23 +3121,24 @@ sub SetConsoleTextAttribute {    # \%coord|undef ($handle, $attributes)
 #  Returns: non-zero on success, undef on failure.
 #
 sub SetConsoleTitle {    # $|undef ($title)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE ? goto &SetConsoleTitleW : goto &SetConsoleTitleA;
 }
 
 sub SetConsoleTitleA {    # $|undef ($title)
   my ($title) = @_;
+  my $encode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 1          ? ERROR_BAD_ARGUMENTS
         : !_is_Str($title) ? ERROR_INVALID_PARAMETER
         : 0
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
-  if ($Caller) {
-    $title = Encode::ANSI::encode($title) if $Caller ne join(':' => caller);
-    $Caller = '';
+  if ($encode) {
+    $title = Encode::ANSI::encode($title);
   }
   if (UNICODE) {
+    _utf8_off($title);
     return $SetConsoleTitleA->Call($title) || undef
   }
   else {
@@ -3123,19 +3148,16 @@ sub SetConsoleTitleA {    # $|undef ($title)
 
 sub SetConsoleTitleW {    # $|undef ($title)
   my ($title) = @_;
+  my $encode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 1          ? ERROR_BAD_ARGUMENTS
         : !_is_Str($title) ? ERROR_INVALID_PARAMETER
         : 0
         ;
   # Encode $title to WCHAR
-  if ($Caller) { 
-    if ($Caller ne join(':' => caller)) {
-      my $err = Win32::GetLastError();    # Encode may set $^E
-      $title = Encode::encode('UTF-16LE', $title);
-      Win32::SetLastError($err);
-    }
-    $Caller = '';
+  if ($encode) {
+    local $^E;    # Encode may set $^E
+    $title = Encode::encode('UTF-16LE', $title);
   }
   return $SetConsoleTitleW->Call($title) || undef;
 }
@@ -3189,11 +3211,9 @@ sub SetCurrentConsoleFontEx {    # $|undef ($handle, $max, \%info)
   }
 
   # Encode FaceName to WCHAR
-  my $wide = do { local $_;
-    my $err = Win32::GetLastError();    # Encode may set $^E
-    $_ = Encode::encode('UTF-16LE', $info->{FaceName});
-    Win32::SetLastError($err);
-    $_;
+  my $wide = do {
+    local $^E;    # Encode may set $^E
+    Encode::encode('UTF-16LE', $info->{FaceName});
   };
 
   # Pack the CONSOLE_FONT_INFOEX structure with all required fields:
@@ -3243,12 +3263,13 @@ sub SetStdHandle {    # $handle|undef ($id, $handle)
 #  Returns: non-zero on success, undef on failure.
 #
 sub WriteConsole {    # $|undef ($handle, $buffer, \$written)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE ? goto &WriteConsoleW : goto &WriteConsoleA;
 }
 
 sub WriteConsoleA {    # $|undef ($handle, $buffer, \$written)
   my ($handle, $buffer, $written) = @_;
+  my $encode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 3                  ? ERROR_BAD_ARGUMENTS
         : !_is_Int($handle)        ? ERROR_INVALID_HANDLE
@@ -3258,25 +3279,25 @@ sub WriteConsoleA {    # $|undef ($handle, $buffer, \$written)
         : 0
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
-  if ($Caller) {
-    $buffer = Encode::ANSI::encode($buffer, Win32::GetConsoleOutputCP()) 
-      if $Caller ne join(':' => caller);
-    $Caller = '';
+  if ($encode) {
+    $buffer = Encode::ANSI::encode($buffer, Win32::GetConsoleOutputCP());
   }
 
   if (UNICODE) {
+    _utf8_off($buffer);
     return $WriteConsoleA->Call($handle, $buffer, length($buffer),
       $$written = 0, undef) || undef;
   }
   else {
     Win32::SetLastError(0);
-    $$written = Win32::Console::_WriteConsole($handle, $buffer) || 0;
+    $$written = Win32::Console::_WriteConsole($handle, $buffer) // 0;
     return Win32::GetLastError() ? undef : 1;
   }
 }
 
 sub WriteConsoleW {    # $|undef ($handle, $buffer, \$written)
   my ($handle, $buffer, $written) = @_;
+  my $encode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 3                  ? ERROR_BAD_ARGUMENTS
         : !_is_Int($handle)        ? ERROR_INVALID_HANDLE
@@ -3286,13 +3307,9 @@ sub WriteConsoleW {    # $|undef ($handle, $buffer, \$written)
         : 0
         ;
   # Encode $buffer to WCHAR
-  if ($Caller) { 
-    if ($Caller ne join(':' => caller)) {
-      my $err = Win32::GetLastError();    # Encode may set $^E
-      $buffer = Encode::encode('UTF-16LE', $buffer);
-      Win32::SetLastError($err);
-    }
-    $Caller = '';
+  if ($encode) {
+    local $^E;    # Encode may set $^E
+    $buffer = Encode::encode('UTF-16LE', $buffer);
   }
   my $length = bytes::length($buffer) >> 1;
   return $WriteConsoleW->Call($handle, $buffer, $length, $$written = 0, undef) 
@@ -3308,7 +3325,7 @@ sub WriteConsoleW {    # $|undef ($handle, $buffer, \$written)
 #  Returns: non-zero on success, undef on failure.
 #
 sub WriteConsoleInput {    # $|undef ($handle, \%record)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE ? goto &WriteConsoleInputW : goto &WriteConsoleInputA;
 }
 
@@ -3321,17 +3338,17 @@ sub WriteConsoleInputA {    # $|undef ($handle, \%record)
         : 0
         ;
   my $buf = '';
-  my $type = $record->{EventType} || 0;
+  my $type = $record->{EventType} // 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
       my @ir = (
         $record->{EventType},
-        $record->{Event}{bKeyDown}          || 0,
-        $record->{Event}{wRepeatCount}      || 0,
-        $record->{Event}{wVirtualKeyCode}   || 0,
-        $record->{Event}{wVirtualScanCode}  || 0,
-        $record->{Event}{uChar}             || 0,
-        $record->{Event}{dwControlKeyState} || 0,
+        $record->{Event}{bKeyDown}          // 0,
+        $record->{Event}{wRepeatCount}      // 0,
+        $record->{Event}{wVirtualKeyCode}   // 0,
+        $record->{Event}{wVirtualScanCode}  // 0,
+        $record->{Event}{uChar}             // 0,
+        $record->{Event}{dwControlKeyState} // 0,
       );
       $buf = pack('L'.'LSSSSL', @ir);
       last;
@@ -3339,11 +3356,11 @@ sub WriteConsoleInputA {    # $|undef ($handle, \%record)
     MOUSE_EVENT == $_ and do {
       my @ir = (
         $record->{EventType}, 
-        $record->{Event}{dwMousePosition}{X} || 0,
-        $record->{Event}{dwMousePosition}{Y} || 0,
-        $record->{Event}{dwButtonState}      || 0,
-        $record->{Event}{dwControlKeyState}  || 0,
-        $record->{Event}{dwEventFlags}       || 0,
+        $record->{Event}{dwMousePosition}{X} // 0,
+        $record->{Event}{dwMousePosition}{Y} // 0,
+        $record->{Event}{dwButtonState}      // 0,
+        $record->{Event}{dwControlKeyState}  // 0,
+        $record->{Event}{dwEventFlags}       // 0,
       );
       unless (UNICODE) {
         return Win32::Console::_WriteConsoleInput($handle, @ir) || undef;
@@ -3354,15 +3371,15 @@ sub WriteConsoleInputA {    # $|undef ($handle, \%record)
     WINDOW_BUFFER_SIZE_EVENT == $_ and do {
       $buf = pack('L'.'SS', 
         $record->{EventType}, 
-        $record->{Event}{dwSize}{X} || 0,
-        $record->{Event}{dwSize}{Y} || 0,
+        $record->{Event}{dwSize}{X} // 0,
+        $record->{Event}{dwSize}{Y} // 0,
       );
       last;
     };
     MENU_EVENT == $_ and do {
       $buf = pack('L'.'L', 
         $record->{EventType}, 
-        $record->{Event}{dwCommandId} || 0,
+        $record->{Event}{dwCommandId} // 0,
       );
       last;
     };
@@ -3393,43 +3410,43 @@ sub WriteConsoleInputW {    # $|undef ($handle, \%record)
         : 0
         ;
   my $buf = '';
-  my $type = $record->{EventType} || 0;
+  my $type = $record->{EventType} // 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
       $buf = pack('L'.'LSSSSL', 
         $record->{EventType},
-        $record->{Event}{bKeyDown}          || 0,
-        $record->{Event}{wRepeatCount}      || 0,
-        $record->{Event}{wVirtualKeyCode}   || 0,
-        $record->{Event}{wVirtualScanCode}  || 0,
-        $record->{Event}{uChar}             || 0,
-        $record->{Event}{dwControlKeyState} || 0,
+        $record->{Event}{bKeyDown}          // 0,
+        $record->{Event}{wRepeatCount}      // 0,
+        $record->{Event}{wVirtualKeyCode}   // 0,
+        $record->{Event}{wVirtualScanCode}  // 0,
+        $record->{Event}{uChar}             // 0,
+        $record->{Event}{dwControlKeyState} // 0,
       );
       last;
     };
     MOUSE_EVENT == $_ and do {
       $buf = pack('L'.'SSLLL', 
         $record->{EventType}, 
-        $record->{Event}{dwMousePosition}{X} || 0,
-        $record->{Event}{dwMousePosition}{Y} || 0,
-        $record->{Event}{dwButtonState}      || 0,
-        $record->{Event}{dwControlKeyState}  || 0,
-        $record->{Event}{dwEventFlags}       || 0,
+        $record->{Event}{dwMousePosition}{X} // 0,
+        $record->{Event}{dwMousePosition}{Y} // 0,
+        $record->{Event}{dwButtonState}      // 0,
+        $record->{Event}{dwControlKeyState}  // 0,
+        $record->{Event}{dwEventFlags}       // 0,
       );
       last;
     };
     WINDOW_BUFFER_SIZE_EVENT == $_ and do {
       $buf = pack('L'.'SS', 
         $record->{EventType}, 
-        $record->{Event}{dwSize}{X} || 0,
-        $record->{Event}{dwSize}{Y} || 0,
+        $record->{Event}{dwSize}{X} // 0,
+        $record->{Event}{dwSize}{Y} // 0,
       );
       last;
     };
     MENU_EVENT == $_ and do {
       $buf = pack('L'.'L', 
         $record->{EventType}, 
-        $record->{Event}{dwCommandId} || 0,
+        $record->{Event}{dwCommandId} // 0,
       );
       last;
     };
@@ -3468,7 +3485,7 @@ sub WriteConsoleInputW {    # $|undef ($handle, \%record)
 # used.
 #
 sub WriteConsoleOutput {    # $|undef ($handle, $buffer, \%size, \%coord, \%region)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE ? goto &WriteConsoleOutputW : goto &WriteConsoleOutputA;
 } 
 
@@ -3580,7 +3597,7 @@ sub WriteConsoleOutputAttribute {    # $|undef ($handle, $buffer, \%coord, \$wri
 #  Returns: non-zero on success, undef on failure.
 #
 sub WriteConsoleOutputCharacter {    # $|undef ($handle, $buffer, \%coord, \$written)
-  $Caller = join(':' => caller);
+  $coding = 1;
   UNICODE
     ? goto &WriteConsoleOutputCharacterW 
     : goto &WriteConsoleOutputCharacterA;
@@ -3588,6 +3605,7 @@ sub WriteConsoleOutputCharacter {    # $|undef ($handle, $buffer, \%coord, \$wri
 
 sub WriteConsoleOutputCharacterA {    # $|undef ($handle, $buffer, \%coord, \$written)
   my ($handle, $buffer, $coord, $written) = @_;
+  my $encode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 4                  ? ERROR_BAD_ARGUMENTS
         : !_is_Int($handle)        ? ERROR_INVALID_HANDLE
@@ -3598,10 +3616,8 @@ sub WriteConsoleOutputCharacterA {    # $|undef ($handle, $buffer, \%coord, \$wr
         : 0
         ;
   # Convert the Perl internal string (UTF-8) to an ANSI string if necessary
-  if ($Caller) {
+  if ($encode) {
     $buffer = Encode::ANSI::encode($buffer, Win32::GetConsoleOutputCP())
-      if $Caller ne join(':' => caller);
-    $Caller = '';
   }
 
   my $r;
@@ -3622,6 +3638,7 @@ sub WriteConsoleOutputCharacterA {    # $|undef ($handle, $buffer, \%coord, \$wr
 
 sub WriteConsoleOutputCharacterW {    # $|undef ($handle, $buffer, \%coord, \$written)
   my ($handle, $buffer, $coord, $written) = @_;
+  my $encode = $coding; $coding = 0;
   croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
     $^E = @_ != 4                  ? ERROR_BAD_ARGUMENTS
         : !_is_Int($handle)        ? ERROR_INVALID_HANDLE
@@ -3632,13 +3649,9 @@ sub WriteConsoleOutputCharacterW {    # $|undef ($handle, $buffer, \%coord, \$wr
         : 0
         ;
   # Encode $buffer to WCHAR
-  if ($Caller) { 
-    if ($Caller ne join(':' => caller)) {
-      my $err = Win32::GetLastError();    # Encode may set $^E
-      $buffer = Encode::encode('UTF-16LE', $buffer);
-      Win32::SetLastError($err);
-    }
-    $Caller = '';
+  if ($encode) {
+    local $^E;    # Encode may set $^E
+    $buffer = Encode::encode('UTF-16LE', $buffer);
   }
   my $length = bytes::length($buffer) >> 1;
   return $WriteConsoleOutputCharacterW->Call($handle, $buffer, $length,
@@ -3669,15 +3682,15 @@ sub GetOSVersion {    # $|@ ()
     $^E = @_ ? ERROR_BAD_ARGUMENTS
         : 0
         ;
-  goto RETURN if @VersionInformation;
+  goto RETURN if @versionInformation;
 
-  @VersionInformation = Win32::GetOSVersion();
+  @versionInformation = Win32::GetOSVersion();
 
   # Older Win32 Perl modules use a code that has not been manifested for 
   # Windows 8.1 and newer, and therefore returns a Windows 8 version (6.2) 
   # as a value. 
   my $bad_manifest = do {
-    my ($os, $major, $minor, $build, $id) = @VersionInformation;
+    my ($os, $major, $minor, $build, $id) = @versionInformation;
     !$os && $id && $major == 6 && $minor == 2;
   };
   goto RETURN unless $bad_manifest;
@@ -3698,25 +3711,24 @@ sub GetOSVersion {    # $|@ ()
     my ($spmajor, $spminor, $mask, $type) = unpack('x276'.'S4', $buffer);
 
     my $os = _GetEditionName();
-    $os = '' unless defined $os;
+    $os //= '';
 
-    @VersionInformation = (
-        $os, 
-        $major, $minor, $build, $id, 
-        $spmajor, $spminor, $mask, $type
+    @versionInformation = (
+      $os, 
+      $major, $minor, $build, $id, 
+      $spmajor, $spminor, $mask, $type
     );
   }
 
 RETURN:
-  return wantarray ? @VersionInformation : $VersionInformation[4];
+  return wantarray ? @versionInformation : $versionInformation[4];
 }
 
 #--------------------
 # Helper Subroutines
 #--------------------
 
-my $CHAR_INFO; BEGIN { $CHAR_INFO = { Char => 0, Attributes => 0 } }
-
+###
 # Usage:
 #
 #  my \%hashref = CHAR_INFO();
@@ -3754,8 +3766,7 @@ sub CHAR_INFO::unpack ($) {    # @ ($)
   return unpack('SS', $_[0]);
 }
 
-my $CONSOLE_CURSOR_INFO = { dwSize => 0, bVisible => 0 };
-
+###
 # Usage:
 #
 #  my \%hashref = CONSOLE_CURSOR_INFO();
@@ -3785,8 +3796,7 @@ sub CONSOLE_CURSOR_INFO { # $hashref|undef (|@|\%)
   return;
 }
 
-my $CONSOLE_FONT_INFO = { nFont => 0, dwFontSize => COORD() };
-
+###
 # Usage:
 #
 #  my \%hashref = CONSOLE_FONT_INFO();
@@ -3815,15 +3825,7 @@ sub CONSOLE_FONT_INFO {    # $hashref|undef (|@|\%)
   return;
 }
 
-my $CONSOLE_FONT_INFOEX = {
-  cbSize     => 0,
-  nFont      => 0,
-  dwFontSize => COORD(),
-  FontFamily => 0,
-  FontWeight => 0,
-  FaceName   => "\0",
-};
-
+###
 # Usage:
 #
 #  my \%hashref = CONSOLE_FONT_INFOEX();
@@ -3865,13 +3867,7 @@ sub CONSOLE_FONT_INFOEX {    # $hashref|undef (|@|\%)
   return;
 }
 
-my $CONSOLE_READCONSOLE_CONTROL = { 
-  nLength           => 0,
-  nInitialChars     => 0,
-  dwCtrlWakeupMask  => 0,
-  dwControlKeyState => 0,
-};
-
+###
 # Usage:
 #
 #  my \%hashref = CONSOLE_READCONSOLE_CONTROL();
@@ -3902,14 +3898,7 @@ sub CONSOLE_READCONSOLE_CONTROL { # $hashref|undef (|@|\%)
   return;
 }
 
-my $CONSOLE_SCREEN_BUFFER_INFO = {
-  dwSize              => COORD(),
-  dwCursorPosition    => COORD(),
-  wAttributes         => 0,
-  srWindow            => SMALL_RECT(),
-  dwMaximumWindowSize => COORD(),
-};
-
+###
 # Usage:
 #
 #  my \%hashref = CONSOLE_SCREEN_BUFFER_INFO();
@@ -3956,8 +3945,7 @@ sub CONSOLE_SCREEN_BUFFER_INFO {    # $hashref|undef (|@|\%)
   return;
 }
 
-my $COORD; BEGIN { $COORD = { X => 0, Y => 0 } }
-
+###
 # Usage:
 #
 #  my \%hashref = COORD();
@@ -3992,6 +3980,7 @@ sub COORD::unpack ($) {    # @ ($)
   return unpack('SS', pack('L', $_[0]));
 }
 
+###
 # Decode the ANSI string into a Perl string using the system code page or 
 # C<$codepage>, if specified. 
 #
@@ -3999,15 +3988,13 @@ sub COORD::unpack ($) {    # @ ($)
 # flag may be set.
 sub Encode::ANSI::decode {    # $str ($ansi, |$codepage)
   my ($ansi, $cpi) = @_;
-  $cpi ||= CP_ACP;
+  $cpi //= CP_ACP;
   if ($ansi =~ /[^\x00-\x7f]/) {
     if ($cpi != CP_UTF8) {
       my $wide = _MultiByteToWideChar($ansi, $cpi);
       if (defined $wide) {
-        my $err = Win32::GetLastError();    # Encode may set $^E
-        my $str = Encode::decode('UTF-16LE', $wide);
-        Win32::SetLastError($err);
-        return $str;
+        local $^E;    # Encode may set $^E
+        return Encode::decode('UTF-16LE', $wide);
       }
     }
     _utf8_on($ansi);
@@ -4016,6 +4003,7 @@ sub Encode::ANSI::decode {    # $str ($ansi, |$codepage)
   return $ansi;
 }
 
+###
 # Use the default system code page if none is specified, and encode the 
 # character string only if the target C<$codepage> is not C<CP_UTF8>.
 #
@@ -4030,9 +4018,10 @@ sub Encode::ANSI::encode {    # $ansi ($str, |$codepage)
   $cpi ||= CP_ACP;
   if ($str =~ /[\xC0-\xf7]/) {
     if ($cpi != CP_UTF8) {
-      my $err = Win32::GetLastError();    # Encode may set $^E
-      my $wide = Encode::encode('UTF-16LE', $str);
-      Win32::SetLastError($err);
+      my $wide = do {
+        local $^E;    # Encode may set $^E
+        Encode::encode('UTF-16LE', $str);
+      };
       my $ansi = _WideCharToMultiByte($wide, $cpi);
       return $ansi if defined $ansi;
     }
@@ -4042,10 +4031,7 @@ sub Encode::ANSI::encode {    # $ansi ($str, |$codepage)
   return $str;
 }
 
-my $SMALL_RECT; BEGIN { $SMALL_RECT = { 
-  Left => 0, Top => 0, Right => 0, Bottom => 0 }
-}
-
+###
 # Usage:
 #
 #  my \%hashref = SMALL_RECT();
@@ -4109,17 +4095,20 @@ sub __CALLER__ {    # \% ($level|undef)
 
 # Returns the subroutine name.
 sub __FUNCTION__ () {    # $subname ()
-  my $pkg = __CALLER__(0)->{package}    || 'main';
-  my $sub = __CALLER__(1)->{subroutine} || 'main::__ANON__';
+  my $pkg = __CALLER__(0)->{package}    // 'main';
+  my $sub = __CALLER__(1)->{subroutine} // 'main::__ANON__';
   my $__func__ = (split $pkg . '::', $sub)[-1];
   return $__func__;
 }
 
+# Extracts the code portion of the specified HRESULT.
 sub _HRESULT_CODE ($) {    # $ ($hr)
   no warnings;
   $_[0] & 0xffff;
 }
 
+# Extracts the facility of the specified HRESULT, which indicates what API or 
+# framework originated this error.
 sub _HRESULT_FACILITY ($) {    # $ ($hr)
   no warnings;
   ($_[0] >> 16) & 0x1fff;
@@ -4131,9 +4120,6 @@ sub __HRESULT_FROM_WIN32 ($) {
   $_[0] <= 0 ? $_[0] : 
     (($_[0] & 0x0000ffff) | (FACILITY_WIN32 << 16) | 0x80000000)
 }
-
-# Create a cache so that the search routine does not have to be performed again.
-my %hwndFound = (0 => 0);
 
 # Get the handle of the current console window by using window's title. 
 # See: http://support.microsoft.com/kb/124103 and
@@ -4182,7 +4168,7 @@ sub _GetEditionName {    # $|undef ()
     $^E = @_ ? ERROR_BAD_ARGUMENTS
         : 0
         ;
-  unless (defined $ProductName) {
+  unless (defined $productName) {
     TRY: eval {
       require Win32API::Registry;
       my $hkey;
@@ -4211,13 +4197,13 @@ sub _GetEditionName {    # $|undef ()
 
       # Clean up and return string
       $data =~ s/\0+$//;
-      $ProductName = $data;
+      $productName = $data;
     };
     CATCH: if ($@) {
-      $ProductName = '';
+      $productName = '';
     }
   }
-  return $ProductName;
+  return $productName;
 }
 
 # Check for a reasonable boolean value. Accepts C<1>, C<0>, the empty string 
@@ -4287,7 +4273,7 @@ sub _MultiByteToWideChar {    # $wstr|undef ($str, |$cp)
   my ($str, $cp) = @_;
   return undef unless defined $str;
   return '' unless $str;
-  $cp = CP_ACP unless defined $cp;
+  $cp //= CP_ACP;
   my $raw = bytes::substr($str, 0);
   my $len = bytes::length($raw);
   my $wlen = $MultiByteToWideChar->Call($cp, 0, $raw, $len, undef, 0) 
@@ -4387,7 +4373,7 @@ sub _utf8_on ($) {
 sub _WideCharToMultiByte {    # $str|undef ($wstr, |$cp)
   my ($wstr, $cp) = @_;
   return undef unless defined $wstr;
-  $cp = CP_ACP unless defined $cp;
+  $cp //= CP_ACP;
   my $wlen = (bytes::length($wstr) >> 1) || return '';
   my $flags = $cp != CP_UTF8 ? WC_NO_BEST_FIT_CHARS : 0;
   my $use_default = 0;
