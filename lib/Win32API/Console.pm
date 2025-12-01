@@ -20,7 +20,7 @@ use version;
 
 # version '...'
 our $version = '0.10';
-our $VERSION = 'v0.2.4';
+our $VERSION = 'v0.3.0';
 $VERSION = eval $VERSION;
 
 # authority '...'
@@ -58,6 +58,7 @@ my (
   $GetConsoleFontSize,
   $GetConsoleOriginalTitleA,
   $GetConsoleOriginalTitleW,
+  $GetConsoleScreenBufferInfoEx,
   $GetConsoleTitleA,
   $GetConsoleTitleW,
   $GetConsoleWindow,
@@ -77,6 +78,7 @@ my (
   $RtlGetVersion,
   $ScrollConsoleScreenBufferW,
   $SetConsoleDisplayMode,
+  $SetConsoleScreenBufferInfoEx,
   $SetConsoleTitleA,
   $SetConsoleTitleW,
   $SetCurrentConsoleFontEx,
@@ -429,6 +431,13 @@ RUNTIME: {
   # Minimum supported client: Windows Vista
   # Minimum supported server: Windows Server 2008
   if ($os >= v6.0) {
+    $GetConsoleScreenBufferInfoEx = Win32::API::More->new('kernel32',
+      'BOOL GetConsoleScreenBufferInfoEx(
+        HANDLE hConsoleOutput,
+        LPVOID lpConsoleScreenBufferInfoEx
+      )'
+    ) or die "Import GetConsoleScreenBufferInfoEx failed: $^E";
+
     $GetCurrentConsoleFontEx = Win32::API::More->new('kernel32',
       'BOOL GetCurrentConsoleFontEx(
         HANDLE hConsoleOutput,
@@ -436,6 +445,13 @@ RUNTIME: {
         LPVOID lpConsoleCurrentFontEx
       )'
     ) or die "Import GetCurrentConsoleFontEx failed: $^E";
+
+    $SetConsoleScreenBufferInfoEx = Win32::API::More->new('kernel32',
+      'BOOL SetConsoleScreenBufferInfoEx(
+        HANDLE hConsoleOutput,
+        LPVOID lpConsoleScreenBufferInfoEx
+      )'
+    ) or die "Import SetConsoleScreenBufferInfoEx failed: $^E";
 
     $SetCurrentConsoleFontEx = Win32::API::More->new('kernel32',
       'BOOL SetCurrentConsoleFontEx(
@@ -475,6 +491,7 @@ our %EXPORT_TAGS = (
     GetConsoleOriginalTitle
     GetConsoleOutputCP
     GetConsoleScreenBufferInfo
+    GetConsoleScreenBufferInfoEx
     GetConsoleTitle
     GetConsoleWindow
     GetCurrentConsoleFont
@@ -498,6 +515,7 @@ our %EXPORT_TAGS = (
     SetConsoleIcon
     SetConsoleMode
     SetConsoleOutputCP
+    SetConsoleScreenBufferInfoEx
     SetConsoleScreenBufferSize
     SetConsoleTextAttribute
     SetConsoleTitle
@@ -552,6 +570,7 @@ our %EXPORT_TAGS = (
     CONSOLE_FONT_INFOEX
     CONSOLE_READCONSOLE_CONTROL
     CONSOLE_SCREEN_BUFFER_INFO
+    CONSOLE_SCREEN_BUFFER_INFOEX
     COORD
     SMALL_RECT
   )],
@@ -729,9 +748,10 @@ use constant {
 
 # Size in number of bytes
 use constant {
-  CONSOLE_FONT_INFOEX_SIZE => 20 + (2 * LF_FACESIZE),
-  INPUT_RECORD_SIZE        => 20,
-  OSVERSIONINFOEXW_SIZE    => 284,
+  CONSOLE_FONT_INFOEX_SIZE          => 20 + (2 * LF_FACESIZE),
+  CONSOLE_SCREEN_BUFFER_INFOEX_SIZE => 96,
+  INPUT_RECORD_SIZE                 => 20,
+  OSVERSIONINFOEXW_SIZE             => 284,
 };
 
 # AttachConsole/AllocConsoleWithOptions/AllocConsole
@@ -911,7 +931,8 @@ use constant UNICODE => do {
 # Use Types::Standard type checking if Type::Tiny is installed.
 use constant HAS_TYPE_TINY => eval {
   require Types::Standard;
-      exists &Types::Standard::is_Bool
+      exists &Types::Standard::is_ArrayRef
+  and exists &Types::Standard::is_Bool
   and exists &Types::Standard::is_CodeRef
   and exists &Types::Standard::is_HashRef
   and exists &Types::Standard::is_Int
@@ -936,6 +957,7 @@ sub CONSOLE_CURSOR_INFO;
 sub CONSOLE_FONT_INFO;
 sub CONSOLE_READCONSOLE_CONTROL;
 sub CONSOLE_SCREEN_BUFFER_INFO;
+sub CONSOLE_SCREEN_BUFFER_INFOEX;
 sub COORD;
 sub SMALL_RECT;
 
@@ -1005,6 +1027,17 @@ my $CONSOLE_SCREEN_BUFFER_INFO = {
   wAttributes         => 0,
   srWindow            => SMALL_RECT(),
   dwMaximumWindowSize => COORD(),
+};
+my $CONSOLE_SCREEN_BUFFER_INFOEX = {
+  cbSize               => 0,
+  dwSize               => COORD(),
+  dwCursorPosition     => COORD(),
+  wAttributes          => 0,
+  srWindow             => SMALL_RECT(),
+  dwMaximumWindowSize  => COORD(),
+  wPopupAttributes     => 0,
+  bFullscreenSupported => 0,
+  ColorTable           => [ (0) x 16 ],
 };
 
 # Caching so that the search routine does not have to be performed all the time
@@ -1651,6 +1684,81 @@ sub GetConsoleScreenBufferInfo {    # $|undef ($handle, \%info)
 }
 
 ###
+# C<GetConsoleScreenBufferInfoEx> retrieves extended information about a 
+# console screen buffer.
+#
+#  - C<$handle>:  Handle to the console output buffer
+#  - C<\%infoEx>: L</CONSOLE_SCREEN_BUFFER_INFOEX> to receive the information
+#
+# B<Note>: C<< $infoEx->{cbSize} >> is set by this function and therefore does 
+# not need to be passed.
+#
+#  Returns: non-zero on success, undef on failure.
+#
+sub GetConsoleScreenBufferInfoEx {    # $|undef ($handle, \%infoEx)
+  my ($handle, $infoEx) = @_;
+  croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
+    $^E = @_ != 2               ? ERROR_BAD_ARGUMENTS
+        : !_is_Int($handle)     ? ERROR_INVALID_HANDLE
+        : !_is_HashRef($infoEx) ? ERROR_INVALID_PARAMETER
+        : readonly(%$infoEx)    ? ERROR_INVALID_PARAMETER
+        : 0
+        ;
+
+  unless (defined $GetConsoleScreenBufferInfoEx) {
+    $^E = ERROR_PROC_NOT_FOUND;
+    return undef;
+  }
+
+  # Allocate a zero-init buffer for the CONSOLE_SCREEN_BUFFER_INFOEX structure
+  my $buffer = "\0" x CONSOLE_SCREEN_BUFFER_INFOEX_SIZE;
+
+  # Set the cbSize field (first 4 bytes) to the total size of the structure
+  substr($buffer, 0, 4) = pack('L', CONSOLE_SCREEN_BUFFER_INFOEX_SIZE);
+
+  my $r = $GetConsoleScreenBufferInfoEx->Call($handle, $buffer) || return undef;
+
+  # Extract the structure fields (skipping cbSize):
+  my @info = unpack('x4 s2 s2 S s4 s2 S L L16', $buffer);
+
+  # If the incorrect hash was passed (generated with one of our structures that 
+  # have locked keys), the error should be detected.
+  TRY: eval {
+    %$infoEx = (
+      cbSize => CONSOLE_SCREEN_BUFFER_INFOEX_SIZE,
+      dwSize => {
+        X => $info[0],
+        Y => $info[1],
+      },
+      dwCursorPosition => {
+        X => $info[2],
+        Y => $info[3],
+      },
+      wAttributes => $info[4],
+      srWindow => {
+        Left   => $info[5],
+        Top    => $info[6],
+        Right  => $info[7],
+        Bottom => $info[8],
+      },
+      dwMaximumWindowSize => {
+        X => $info[9],
+        Y => $info[10],
+      },
+      wPopupAttributes     => $info[11],
+      bFullscreenSupported => $info[12],
+      ColorTable           => [ @info[13..28] ],
+    );
+  };
+  CATCH: if ($@) {
+    $^E = ERROR_INVALID_PARAMETER;
+    return undef;
+  }
+
+  return $r;
+}
+
+###
 # C<GetConsoleTitle> retrieves the title of the current console window.
 #
 #  - C<\$buffer>: Reference to a buffer receiving the title string
@@ -1773,12 +1881,12 @@ sub GetCurrentConsoleFont {    # $|undef ($handle, $max, \%info)
 
   # Pack a CONSOLE_FONT_INFO structure:
   # nFont (DWORD), dwFontSize.X (SHORT), dwFontSize.Y (SHORT)
-  my $lpFontInfo = pack('LSS', 0 x 3);
+  my $lpFontInfo = pack('L s2', 0 x 3);
 
   my $r = $GetCurrentConsoleFont->Call($handle, $max ? 1 : 0, $lpFontInfo);
 
   # Extract the returned values: font index, width, height
-  my ($index, $width, $height) = unpack('LSS', $lpFontInfo);
+  my ($index, $width, $height) = unpack('L s2', $lpFontInfo);
 
   if (EMULATE_FONT_SIZE and !$width || !$height) {
     my $coord = GetConsoleFontSize($handle, $index);
@@ -1839,17 +1947,18 @@ sub GetCurrentConsoleFontEx {    # $|undef ($handle, $max, \%info)
   }
  
   # Allocate a zero-initialized buffer for the CONSOLE_FONT_INFOEX structure
-  my $lpFontInfoEx = "\0" x CONSOLE_FONT_INFOEX_SIZE;
+  my $buffer = "\0" x CONSOLE_FONT_INFOEX_SIZE;
 
   # Set the cbSize field (first 4 bytes) to the total size of the structure
-  substr($lpFontInfoEx, 0, 4) = pack('L', CONSOLE_FONT_INFOEX_SIZE);
+  substr($buffer, 0, 4) = pack('L', CONSOLE_FONT_INFOEX_SIZE);
   
-  my $r = $GetCurrentConsoleFontEx->Call($handle, $max ? 1 : 0, $lpFontInfoEx);
+  my $r = $GetCurrentConsoleFontEx->Call($handle, $max ? 1 : 0, $buffer) 
+    || return undef;
 
   # Extract the structure fields (skipping cbSize):
   # nFont (DWORD), dwFontSize.X (SHORT), dwFontSize.Y (SHORT),
   # FontFamily (UINT), FontWeight (UINT)
-  my ($index, $x, $y, $family, $weight) = unpack('x4'.'LSSLL', $lpFontInfoEx);
+  my ($index, $x, $y, $family, $weight) = unpack('x4 L s2 LL', $buffer);
 
   if (EMULATE_FONT_SIZE and !$x || !$y) {
     my $coord = GetConsoleFontSize($handle, $index);
@@ -1863,9 +1972,9 @@ sub GetCurrentConsoleFontEx {    # $|undef ($handle, $max, \%info)
   # Extract and decode the FaceName field (WCHAR[LF_FACESIZE], 64 bytes)
   # at the end of the structure, interpreting it as UTF-16LE. 
   my $name;
-  if ($lpFontInfoEx) {
+  if ($buffer) {
     local $^E;    # Encode may set $^E
-    $name = bytes::substr($lpFontInfoEx, 
+    $name = bytes::substr($buffer, 
       CONSOLE_FONT_INFOEX_SIZE - (2 * LF_FACESIZE), (2 * LF_FACESIZE));
     $name = Encode::decode('UTF-16LE', unpack('A*', $name));
   };
@@ -1890,7 +1999,7 @@ sub GetCurrentConsoleFontEx {    # $|undef ($handle, $max, \%info)
     $^E = ERROR_INVALID_PARAMETER;
     return undef;
   }
-  return $r ? $r : undef;
+  return $r;
 }
 
 ###
@@ -2015,7 +2124,7 @@ sub PeekConsoleInputA {    # $|undef ($handle, \%buffer)
   my $type = $ir[0] // 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'LSSSCxL', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 L S S S Cx L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2030,7 +2139,7 @@ sub PeekConsoleInputA {    # $|undef ($handle, \%buffer)
       last;
     };
     MOUSE_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'SSLLL', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 s2 L L L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2046,7 +2155,7 @@ sub PeekConsoleInputA {    # $|undef ($handle, \%buffer)
       last;
     };
     WINDOW_BUFFER_SIZE_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'SS', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 s2', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2059,7 +2168,7 @@ sub PeekConsoleInputA {    # $|undef ($handle, \%buffer)
       last;
     };
     MENU_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2069,7 +2178,7 @@ sub PeekConsoleInputA {    # $|undef ($handle, \%buffer)
       last;
     };
     FOCUS_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2104,7 +2213,7 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
   my $type = $ir[0] // 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'LSSSSL', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 L S S S S L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2119,7 +2228,7 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     MOUSE_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'SSLLL', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 s2 L L L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2135,7 +2244,7 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     WINDOW_BUFFER_SIZE_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'SS', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 s2', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2148,7 +2257,7 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     MENU_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2158,7 +2267,7 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     FOCUS_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2364,7 +2473,7 @@ sub ReadConsoleInputA {    # $|undef ($handle, \%buffer)
   my $type = $ir[0] // 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'LSSSCxL', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 L S S S Cx L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2379,7 +2488,7 @@ sub ReadConsoleInputA {    # $|undef ($handle, \%buffer)
       last;
     };
     MOUSE_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'SSLLL', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 s2 L L L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2395,7 +2504,7 @@ sub ReadConsoleInputA {    # $|undef ($handle, \%buffer)
       last;
     };
     WINDOW_BUFFER_SIZE_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'SS', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 s2', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2408,7 +2517,7 @@ sub ReadConsoleInputA {    # $|undef ($handle, \%buffer)
       last;
     };
     MENU_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2453,7 +2562,7 @@ sub ReadConsoleInputW {    # $|undef ($handle, \%buffer)
   my $type = $ir[0] // 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'LSSSSL', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 L S S S S L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2468,7 +2577,7 @@ sub ReadConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     MOUSE_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'SSLLL', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 s2 L L L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2484,7 +2593,7 @@ sub ReadConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     WINDOW_BUFFER_SIZE_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'SS', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 s2', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2497,7 +2606,7 @@ sub ReadConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     MENU_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2507,7 +2616,7 @@ sub ReadConsoleInputW {    # $|undef ($handle, \%buffer)
       last;
     };
     FOCUS_EVENT == $_ and do {
-      @ir = ( @ir, unpack('x4'.'L', $lpBuffer) );
+      @ir = ( @ir, unpack('x4 L', $lpBuffer) );
       %$buffer = (
         EventType => $ir[0],
         Event => {
@@ -2923,7 +3032,7 @@ sub SetConsoleCursorInfo {    # $|undef ($handle, \%info)
         : 0
         ;
   return Win32::Console::_SetConsoleCursorInfo($handle, 
-    @{$info}{qw(dwSize bVisible)}) || undef;
+    $info->{dwSize}, $info->{bVisible} ? 1 : 0) || undef;
 }
 
 ###
@@ -3073,6 +3182,44 @@ sub SetConsoleOutputCP {    # $|undef ($codepage)
 }
 
 ###
+# C<SetConsoleScreenBufferInfoEx> retrieves extended information about a 
+# console screen buffer.
+#
+#  - C<$handle>:  Handle to the console output buffer
+#  - C<\%infoEx>: L</CONSOLE_SCREEN_BUFFER_INFOEX> for setting the information
+#
+# B<Note>: C<< $infoEx->{cbSize} >> is set by this function and can be 0.
+#
+#  Returns: non-zero on success, undef on failure.
+#
+sub SetConsoleScreenBufferInfoEx {    # $|undef ($handle, \%infoEx)
+  my ($handle, $infoEx) = @_;
+  croak(_usage("$^E", __FILE__, __FUNCTION__)) if 
+    $^E = @_ != 2                                ? ERROR_BAD_ARGUMENTS
+        : !_is_Int($handle)                      ? ERROR_INVALID_HANDLE
+        : !CONSOLE_SCREEN_BUFFER_INFOEX($infoEx) ? ERROR_INVALID_PARAMETER
+        : 0
+        ;
+  unless (defined $SetConsoleScreenBufferInfoEx) {
+    $^E = ERROR_PROC_NOT_FOUND;
+    return undef;
+  }
+  my $buffer = pack('L s2 s2 S s4 s2 S L L16', 
+    CONSOLE_SCREEN_BUFFER_INFOEX_SIZE,
+         COORD::list($infoEx->{dwSize}),
+         COORD::list($infoEx->{dwCursorPosition}),
+                     $infoEx->{wAttributes},
+    SMALL_RECT::list($infoEx->{srWindow}),
+         COORD::list($infoEx->{dwMaximumWindowSize}),
+                     $infoEx->{wPopupAttributes},
+                     $infoEx->{bFullscreenSupported} ? 1 : 0,
+                  @{ $infoEx->{ColorTable} },
+  );
+  my $r = $SetConsoleScreenBufferInfoEx->Call($handle, $buffer);
+  return $r ? $r : undef;
+}
+
+###
 # C<SetConsoleScreenBufferSize> sets the size of the console screen buffer.
 #
 #  - C<$handle>: Handle to the console screen buffer
@@ -3191,8 +3338,7 @@ sub SetConsoleWindowInfo {    # \%coord|undef ($handle, $absolute, \%rect)
 #  - C<$max>:    TRUE to retrieve maximum font size, FALSE for current
 #  - C<\%info>:  Hash reference to a L</CONSOLE_FONT_INFOEX> structure
 #
-# B<Note>: C<< $info->{cbSize} >> is set by this function and therefore does 
-# not need to be passed.
+# B<Note>: C<< $info->{cbSize} >> is set by this function and can be 0.
 #
 #  Returns: non-zero on success, undef on failure.
 #
@@ -3219,7 +3365,7 @@ sub SetCurrentConsoleFontEx {    # $|undef ($handle, $max, \%info)
   # Pack the CONSOLE_FONT_INFOEX structure with all required fields:
   # cbSize (DWORD), nFont (DWORD), dwFontSize.X (SHORT), dwFontSize.Y (SHORT),
   # FontFamily (UINT), FontWeight (UINT), FaceName (WCHAR[LF_FACESIZE])
-  my $lpFontInfoEx = pack('LLSSLL' . 'a' . (2 * LF_FACESIZE),
+  my $buffer = pack('L L s2 L L a' . (2 * LF_FACESIZE),
     CONSOLE_FONT_INFOEX_SIZE,                    # Byte size of the structure
     $info->{nFont},                              # Font index
     $info->{dwFontSize}{X},                      # Font width
@@ -3230,7 +3376,7 @@ sub SetCurrentConsoleFontEx {    # $|undef ($handle, $max, \%info)
   );
 
   # Call the Windows API SetCurrentConsoleFontEx to apply the font settings
-  my $r = $SetCurrentConsoleFontEx->Call($handle, $max ? 1 : 0, $lpFontInfoEx);
+  my $r = $SetCurrentConsoleFontEx->Call($handle, $max ? 1 : 0, $buffer);
   return $r ? $r : undef;
 }
 
@@ -3350,7 +3496,7 @@ sub WriteConsoleInputA {    # $|undef ($handle, \%record)
         $record->{Event}{uChar}             // 0,
         $record->{Event}{dwControlKeyState} // 0,
       );
-      $buf = pack('L'.'LSSSSL', @ir);
+      $buf = pack('L L S S S S L', @ir);
       last;
     };
     MOUSE_EVENT == $_ and do {
@@ -3365,11 +3511,11 @@ sub WriteConsoleInputA {    # $|undef ($handle, \%record)
       unless (UNICODE) {
         return Win32::Console::_WriteConsoleInput($handle, @ir) || undef;
       }
-      $buf = pack('L'.'SSLLL', @ir);
+      $buf = pack('L s2 L L L', @ir);
       last;
     };
     WINDOW_BUFFER_SIZE_EVENT == $_ and do {
-      $buf = pack('L'.'SS', 
+      $buf = pack('L s2', 
         $record->{EventType}, 
         $record->{Event}{dwSize}{X} // 0,
         $record->{Event}{dwSize}{Y} // 0,
@@ -3377,7 +3523,7 @@ sub WriteConsoleInputA {    # $|undef ($handle, \%record)
       last;
     };
     MENU_EVENT == $_ and do {
-      $buf = pack('L'.'L', 
+      $buf = pack('L L', 
         $record->{EventType}, 
         $record->{Event}{dwCommandId} // 0,
       );
@@ -3413,7 +3559,7 @@ sub WriteConsoleInputW {    # $|undef ($handle, \%record)
   my $type = $record->{EventType} // 0;
   SWITCH: for ($type) {
     KEY_EVENT == $_ and do {
-      $buf = pack('L'.'LSSSSL', 
+      $buf = pack('L L S S S S L', 
         $record->{EventType},
         $record->{Event}{bKeyDown}          // 0,
         $record->{Event}{wRepeatCount}      // 0,
@@ -3425,7 +3571,7 @@ sub WriteConsoleInputW {    # $|undef ($handle, \%record)
       last;
     };
     MOUSE_EVENT == $_ and do {
-      $buf = pack('L'.'SSLLL', 
+      $buf = pack('L s2 L L L', 
         $record->{EventType}, 
         $record->{Event}{dwMousePosition}{X} // 0,
         $record->{Event}{dwMousePosition}{Y} // 0,
@@ -3436,7 +3582,7 @@ sub WriteConsoleInputW {    # $|undef ($handle, \%record)
       last;
     };
     WINDOW_BUFFER_SIZE_EVENT == $_ and do {
-      $buf = pack('L'.'SS', 
+      $buf = pack('L s2', 
         $record->{EventType}, 
         $record->{Event}{dwSize}{X} // 0,
         $record->{Event}{dwSize}{Y} // 0,
@@ -3444,14 +3590,14 @@ sub WriteConsoleInputW {    # $|undef ($handle, \%record)
       last;
     };
     MENU_EVENT == $_ and do {
-      $buf = pack('L'.'L', 
+      $buf = pack('L L', 
         $record->{EventType}, 
         $record->{Event}{dwCommandId} // 0,
       );
       last;
     };
     FOCUS_EVENT == $_ and do {
-      $buf = pack('L'.'L', 
+      $buf = pack('L L', 
         $record->{EventType}, 
         $record->{Event}{bSetFocus} ? 1 : 0,
       );
@@ -3704,11 +3850,11 @@ sub GetOSVersion {    # $|@ ()
     goto RETURN unless $status == 0;
 
     # Extract dwMajorVersion, dwMinorVersion, dwBuildNumber, dwPlatformId
-    my ($major, $minor, $build, $id) = unpack('x4'.'L4', $buffer);
+    my ($major, $minor, $build, $id) = unpack('x4 L L L L', $buffer);
     goto RETURN unless $id;
 
     # Extract wServicePackMajor, wServicePackMinor, wSuiteMask, wProductType
-    my ($spmajor, $spminor, $mask, $type) = unpack('x276'.'S4', $buffer);
+    my ($spmajor, $spminor, $mask, $type) = unpack('x276 S S S S', $buffer);
 
     my $os = _GetEditionName();
     $os //= '';
@@ -3772,27 +3918,23 @@ sub CHAR_INFO::unpack ($) {    # @ ($)
 #  my \%hashref = CONSOLE_CURSOR_INFO();
 #  my \%hashref = CONSOLE_CURSOR_INFO($size, $visible) // die;
 #  my \%hashref = CONSOLE_CURSOR_INFO({
-#    dwSize   => $size, 
+#    dwSize   => $size,
 #    bVisible => $visible,
 #  }) // die;
 sub CONSOLE_CURSOR_INFO { # $hashref|undef (|@|\%)
-  return lock_ref_keys { %$CONSOLE_CURSOR_INFO } 
+  return lock_ref_keys { %$CONSOLE_CURSOR_INFO }
       if @_ == 0
       ;
   return lock_ref_keys { %{$_[0]} }
-      if @_ == 1 
+      if @_ == 1
       && _is_HashRef($_[0])
       && keys(%{$_[0]}) == keys(%$CONSOLE_CURSOR_INFO)
-      && grep(!exists($_[0]->{$_}), keys %$CONSOLE_CURSOR_INFO) == 0
-      &&  _is_Int($_[0]->{dwSize})
-      && _is_Bool($_[0]->{bVisible})
+      && grep(_is_Int($_[0]->{$_}) => keys(%$CONSOLE_CURSOR_INFO)) == 2
       ;
   return lock_ref_keys { 
-      dwSize   => $_[0], 
-      bVisible => $_[1] ? 1 : 0,
-    } if @_ == 2
-      &&  _is_Int($_[0])
-      && _is_Bool($_[1]);
+      dwSize   => shift,
+      bVisible => shift,
+    } if grep(_is_Int($_) => @_) == 2;
   return;
 }
 
@@ -3830,7 +3972,14 @@ sub CONSOLE_FONT_INFO {    # $hashref|undef (|@|\%)
 #
 #  my \%hashref = CONSOLE_FONT_INFOEX();
 #  my @fontSize = ($fontSizeX, $fontSizeY);
-#  my \%hashref = CONSOLE_FONT_INFOEX($index, @fontSize) // die;
+#  my \%hashref = CONSOLE_FONT_INFOEX(
+#    CONSOLE_FONT_INFOEX_SIZE,
+#    $index,
+#    @fontSize,
+#    $pitch,
+#    $weight,
+#    $string,
+#  ) // die;
 #  my \%hashref = CONSOLE_FONT_INFOEX({
 #    cbSize     => CONSOLE_FONT_INFOEX_SIZE,
 #    nFont      => $index,
@@ -3862,7 +4011,7 @@ sub CONSOLE_FONT_INFOEX {    # $hashref|undef (|@|\%)
       FontFamily => shift,
       FontWeight => shift,
       FaceName   => shift,
-    } if grep(_is_Int($_) => $_[0..5]) == 6
+    } if grep(_is_Int($_) => @_[0..5]) == 6
       && _is_Str($_[6]);
   return;
 }
@@ -3926,7 +4075,7 @@ sub CONSOLE_SCREEN_BUFFER_INFO {    # $hashref|undef (|@|\%)
       ;
   return _lock_ref_keys_recure { %{$_[0]} }
       if @_ == 1 
-      && _is_HashRef($_[0]) eq 'HASH'
+      && _is_HashRef($_[0])
       && keys(%{$_[0]}) == keys(%$CONSOLE_SCREEN_BUFFER_INFO)
       && grep(!exists($_[0]->{$_}), keys %$CONSOLE_SCREEN_BUFFER_INFO) == 0
       &&      COORD($_[0]->{dwSize})
@@ -3942,6 +4091,70 @@ sub CONSOLE_SCREEN_BUFFER_INFO {    # $hashref|undef (|@|\%)
       srWindow            => SMALL_RECT(shift, shift, shift, shift),
       dwMaximumWindowSize => COORD(shift, shift),
     } if grep(_is_Int($_) => @_) == 11;
+  return;
+}
+
+###
+# Usage:
+#
+#  my \%hashref = CONSOLE_SCREEN_BUFFER_INFOEX();
+#  my @size     = ($sizeX, $sizeY);
+#  my @cursor   = ($cursorX, $cursorY);
+#  my @win_rect = ($left, $top, $right, $bottom);
+#  my @max_size = ($maxX, $maxY);
+#  my @palette  = (0..15);
+#  my \%hashref = CONSOLE_SCREEN_BUFFER_INFOEX(
+#    CONSOLE_SCREEN_BUFFER_INFOEX_SIZE,
+#    @size,
+#    @cursor,
+#    $attr,
+#    @win_rect,
+#    @max_size,
+#    $pop_attr,
+#    $fullscreen,
+#    @palette,
+#  ) // die;
+#  my \%hashref = CONSOLE_SCREEN_BUFFER_INFOEX({
+#    cbSize               => CONSOLE_SCREEN_BUFFER_INFOEX_SIZE,
+#    dwSize               => COORD(@size),
+#    dwCursorPosition     => COORD(@cursor),
+#    wAttributes          => $attr,
+#    srWindow             => SMALL_RECT(@win_rect),
+#    dwMaximumWindowSize  => COORD(@max_size)
+#    wPopupAttributes     => $pop_attr,
+#    bFullscreenSupported => $fullscreen,
+#    ColorTable           => [ @palette ],
+#  }) // die;
+sub CONSOLE_SCREEN_BUFFER_INFOEX {    # $hashref|undef (|@|\%)
+  return _lock_ref_keys_recure { %$CONSOLE_SCREEN_BUFFER_INFOEX }
+      if @_ == 0
+      ;
+  return _lock_ref_keys_recure { %{$_[0]} }
+      if @_ == 1
+      && _is_HashRef($_[0])
+      && keys(%{$_[0]}) == keys(%$CONSOLE_SCREEN_BUFFER_INFOEX)
+      && grep(!exists($_[0]->{$_}), keys %$CONSOLE_SCREEN_BUFFER_INFOEX) == 0
+      &&      _is_Int($_[0]->{cbSize})
+      &&        COORD($_[0]->{dwSize})
+      &&        COORD($_[0]->{dwCursorPosition})
+      &&      _is_Int($_[0]->{wAttributes})
+      &&   SMALL_RECT($_[0]->{srWindow})
+      &&        COORD($_[0]->{dwMaximumWindowSize})
+      &&      _is_Int($_[0]->{wPopupAttributes})
+      &&      _is_Int($_[0]->{bFullscreenSupported})
+      && _is_ArrayRef($_[0]->{ColorTable})
+      ;
+  return _lock_ref_keys_recure {
+      cbSize               => shift,
+      dwSize               => COORD(shift, shift),
+      dwCursorPosition     => COORD(shift, shift),
+      wAttributes          => shift,
+      srWindow             => SMALL_RECT(shift, shift, shift, shift),
+      dwMaximumWindowSize  => COORD(shift, shift),
+      wPopupAttributes     => shift,
+      bFullscreenSupported => shift,
+      ColorTable           => \(@_),
+    } if grep(_is_Int($_) => @_) == 30;
   return;
 }
 
@@ -3973,11 +4186,11 @@ sub COORD::list ($) {    # @ (\%)
 }
 
 sub COORD::pack ($) {    # $ (\%)
-  return unpack('L', pack('SS', @{$_[0]}{qw(X Y)}));
+  return unpack('L', pack('s2', @{$_[0]}{qw(X Y)}));
 }
 
 sub COORD::unpack ($) {    # @ ($)
-  return unpack('SS', pack('L', $_[0]));
+  return unpack('s2', pack('L', $_[0]));
 }
 
 ###
@@ -4071,11 +4284,11 @@ sub SMALL_RECT::list ($) {    # @ (\%)
 }
 
 sub SMALL_RECT::pack ($) {    # $ (\%)
-  return pack('S4', @{$_[0]}{qw(Left Top Right Bottom)});
+  return pack('s4', @{$_[0]}{qw(Left Top Right Bottom)});
 }
 
 sub SMALL_RECT::unpack ($) {    # @ ($)
-  return unpack('S4', $_[0]);
+  return unpack('s4', $_[0]);
 }
 
 #--------------------
@@ -4204,6 +4417,16 @@ sub _GetEditionName {    # $|undef ()
     }
   }
   return $productName;
+}
+
+# Check for array reference. Allows the array to be empty. 
+# B<Note>: Returns FALSE on objects, TRUE for C<ArrayRef[Ref]>.
+sub _is_ArrayRef ($) {    # $bool (\%)
+  no warnings;
+  *_is_ArrayRef = HAS_TYPE_TINY ? \&Types::Standard::is_ArrayRef : sub {
+    return ref($_[0]) eq 'ARRAY';
+  };
+  goto &_is_ArrayRef;
 }
 
 # Check for a reasonable boolean value. Accepts C<1>, C<0>, the empty string 
