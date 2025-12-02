@@ -14,11 +14,11 @@ this module was created, which uses most of the XS functions of
 L<Win32::Console>, but also provides additional ones (e.g., for wide char 
 support). 
 
-Further details can be found in the included PM or directly at MSDN. The API 
+Further details can be found in the source code or directly at MSDN. The API 
 interface was modeled on the classic Windows API, so that the original 
 documentation from Microsoft can be used in most cases. 
 
-=head1 FUNCTIONS
+=head1 SUBROUTINES
 
 Many Windows API functions exist in multiple variants that differ by the 
 character encoding they expect. The naming convention typically uses suffixes:
@@ -75,8 +75,11 @@ Example:
   use utf8;
   FunctionName("Text");
 
-B<Note>: The wrapper provides a compatibility layer, but depends on the 
-internal XS compilation settings of L<Win32::Console>.
+B<Note>: The wrapper provides a compatibility layer, but its behavior depends 
+on the internal XS build configuration of L<Win32::Console>.
+
+Please also refer to the Windows-specific L</CAVEATS> section for important 
+details when using these wrapper functions.
 
 =back
 
@@ -764,7 +767,10 @@ I<INPUT_RECORD> structure used by C<PeekConsoleInput> and to represent a
 single input event. See L</ReadConsoleInput> for the complete description of
 I<INPUT_RECORD>.
 
- Returns: non-zero on success, undef on failure.
+ Returns: nonzero or "0 but true" on success, undef on failure.
+
+B<Note>: C<PeekConsoleInput> returns C<0 but true> if the input buffer is 
+empty.
 
 
 
@@ -2136,6 +2142,33 @@ Constants for L</GetStdHandle> and L</SetStdHandle>
 =head2 :all
 
   All of the above.
+
+=head1 CAVEATS
+
+Not all functions listed here are supported on every version of Windows. 
+Where possible, the platform support is detected, and if there are limitations, 
+a Windows error code (C<$^E>) is set accordingly. In some cases, a workaround 
+is available to circumvent these limitations. Please refer to the official 
+MSDN documentation to verify whether a specific function is supported on your 
+Windows version.
+
+=head2 Known limitations
+
+On Windows 7 and 8, C<WideCharToMultiByte> with C<CP_UTF8> sometimes returns 
+incorrect results when the system locale is not UTF-8. This is a platform 
+limitation, not an issue in the Perl code. Typical symptoms include corrupted 
+characters (e.g., double-encoded UTF-8 sequences).
+
+L<MSDN - WideCharToMultiByte function|https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-widechartomultibyte>:
+
+  UTF-8 (CP_UTF8) is supported starting with Windows XP, but full support for 
+  UTF-8 as a system locale was added in later versions of Windows 10
+
+L<MSDN - Unicode in the Windows API|https://learn.microsoft.com/en-us/windows/win32/intl/unicode-in-the-windows-api>:
+
+  Prior to Windows 10 version 1903, UTF-8 was not available as a system code 
+  page. Applications using CP_UTF8 may experience inconsistent behavior if the 
+  system locale is not UTF-8.
 
 =head1 REQUIRES
 

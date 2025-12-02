@@ -1,5 +1,10 @@
 Revision history for Win32API::Console
 
+0.3.1  2025-12-02
+    - Add limitations to POD
+    - Change PeekConsoleInput returns "0 but true" if read is 0
+    - Fix tests with CP_UTF8, use alternative code page for old systems
+
 0.3.0  2025-12-01
     - Add Get/SetConsoleScreenBufferInfoEx functions
     - Fix use of 'S' instead of 's' for COORD and SMALL_RECT

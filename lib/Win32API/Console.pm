@@ -20,7 +20,7 @@ use version;
 
 # version '...'
 our $version = '0.10';
-our $VERSION = 'v0.3.0';
+our $VERSION = 'v0.3.1';
 $VERSION = eval $VERSION;
 
 # authority '...'
@@ -2099,7 +2099,10 @@ sub GetStdHandle {    # $handle ($id)
 # single input event. See L</ReadConsoleInput> for the complete description of 
 # I<INPUT_RECORD>.
 #
-#  Returns: non-zero on success, undef on failure.
+#  Returns: nonzero or "0 but true" on success, undef on failure.
+#
+# B<Note>: C<PeekConsoleInput> returns C<0 but true> if the input buffer is 
+# empty.
 #
 sub PeekConsoleInput {    # $|undef ($handle, \%buffer)
   $coding = 1;
@@ -2117,8 +2120,8 @@ sub PeekConsoleInputA {    # $|undef ($handle, \%buffer)
         ;
   my $lpBuffer = "\0" x INPUT_RECORD_SIZE;
   my $read = 0;
-  return undef
-    unless $PeekConsoleInputA->Call($handle, $lpBuffer, 1, $read) && $read;
+  $PeekConsoleInputA->Call($handle, $lpBuffer, 1, $read) || return undef;
+  return "0E0" unless $read;
 
   my @ir   = unpack('S', $lpBuffer);
   my $type = $ir[0] // 0;
@@ -2206,8 +2209,8 @@ sub PeekConsoleInputW {    # $|undef ($handle, \%buffer)
         ;
   my $lpBuffer = "\0" x INPUT_RECORD_SIZE;
   my $read = 0;
-  return undef
-    unless $PeekConsoleInputW->Call($handle, $lpBuffer, 1, $read) && $read;
+  $PeekConsoleInputW->Call($handle, $lpBuffer, 1, $read) || return undef;
+  return "0E0" unless $read;
 
   my @ir   = unpack('S', $lpBuffer);
   my $type = $ir[0] // 0;
